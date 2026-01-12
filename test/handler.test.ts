@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { defineContract, FetchHandler } from "../src/index.js";
+import { defineContract, FetchHandler, response } from "../src/index.js";
 
 const User = Schema.Struct({
   id: Schema.Number,
@@ -11,23 +11,23 @@ const User = Schema.Struct({
 
 class UserNotFoundError extends Schema.ErrorClass<UserNotFoundError>(
   "UserNotFoundError",
-)({ message: Schema.String }, { httpStatus: 404 }) {}
+)({ message: Schema.String }) {}
 
 const TestContract = defineContract({
   "/users": {
     get: {
-      success: Schema.Array(User),
+      success: response(Schema.Array(User)),
     },
     post: {
       body: Schema.Struct({ name: Schema.String }),
-      success: User,
+      success: response(User),
     },
   },
   "/users/{id}": {
     get: {
       path: { id: Schema.NumberFromString },
-      success: User,
-      failure: UserNotFoundError,
+      success: response(User),
+      failure: response(UserNotFoundError, { status: 404 }),
     },
   },
 });
@@ -39,19 +39,23 @@ const users = [
 
 const TestContractImpl = Layer.sync(TestContract, () => ({
   "/users": {
-    get: () => Effect.succeed(users),
-    post: (ctx: { body: { name: string } }) =>
-      Effect.succeed({ id: users.length + 1, name: ctx.body.name }),
+    get: (ctx) => Effect.succeed(ctx.respond(users)),
+    post: (ctx) =>
+      Effect.succeed(
+        ctx.respond({ id: users.length + 1, name: ctx.body.name }),
+      ),
   },
   "/users/{id}": {
-    get: (ctx: { path: { id: number } }) => {
-      const user = users.find((u) => u.id === ctx.path.id);
-      if (!user)
-        return Effect.fail(
-          new UserNotFoundError({ message: "User not found" }),
-        );
-      return Effect.succeed(user);
-    },
+    get: (ctx) =>
+      Effect.gen(function* () {
+        const user = users.find((u) => u.id === ctx.path.id);
+        if (!user) {
+          return yield* Effect.fail(
+            new UserNotFoundError({ message: "User not found" }),
+          );
+        }
+        return ctx.respond(user);
+      }),
   },
 }));
 
@@ -99,10 +103,8 @@ describe.concurrent("FetchHandler", () => {
       const request = new Request("http://localhost/users/999");
       const response = yield* Effect.promise(() => handler(request));
       expect(response.status).toBe(404);
-      const body = (yield* Effect.promise(() => response.json())) as {
-        error: string;
-      };
-      expect(body.error).toBe("UserNotFoundError");
+      const body = yield* Effect.promise(() => response.json());
+      expect(body).toEqual({ message: "User not found" });
     }).pipe(Effect.provide(TestContractImpl)),
   );
 
@@ -148,17 +150,19 @@ describe.concurrent("FetchHandler", () => {
     }).pipe(Effect.provide(TestContractImpl)),
   );
 
-  it.effect("returns user not found for non-existent user (NaN id)", () =>
-    Effect.gen(function* () {
-      const handler = yield* FetchHandler.from(TestContract);
-      const request = new Request("http://localhost/users/not-a-number");
-      const response = yield* Effect.promise(() => handler(request));
-      expect(response.status).toBe(404);
-      const body = (yield* Effect.promise(() => response.json())) as {
-        error: string;
-      };
-      expect(body.error).toBe("UserNotFoundError");
-    }).pipe(Effect.provide(TestContractImpl)),
+  it.effect(
+    "returns 404 for NaN user id (NumberFromString decodes to NaN)",
+    () =>
+      Effect.gen(function* () {
+        const handler = yield* FetchHandler.from(TestContract);
+        // Note: Schema.NumberFromString decodes "not-a-number" as NaN,
+        // which is a valid number, so validation passes but user isn't found
+        const request = new Request("http://localhost/users/not-a-number");
+        const response = yield* Effect.promise(() => handler(request));
+        expect(response.status).toBe(404);
+        const body = yield* Effect.promise(() => response.json());
+        expect(body).toEqual({ message: "User not found" });
+      }).pipe(Effect.provide(TestContractImpl)),
   );
 
   it.effect("supports custom error formatter", () =>
@@ -169,7 +173,7 @@ describe.concurrent("FetchHandler", () => {
           body: { customError: true, type: error?.constructor?.name },
         }),
       });
-      const request = new Request("http://localhost/users/999");
+      const request = new Request("http://localhost/unknown");
       const response = yield* Effect.promise(() => handler(request));
       expect(response.status).toBe(500);
       const body = (yield* Effect.promise(() => response.json())) as {
@@ -177,7 +181,7 @@ describe.concurrent("FetchHandler", () => {
         type: string;
       };
       expect(body.customError).toBe(true);
-      expect(body.type).toBe("UserNotFoundError");
+      expect(body.type).toBe("NotFoundError");
     }).pipe(Effect.provide(TestContractImpl)),
   );
 });

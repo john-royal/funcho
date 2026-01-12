@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import { httpStatus, OpenAPI } from "../src/index.js";
+import { OpenAPI, response } from "../src/index.js";
 
 describe.concurrent("OpenAPI", () => {
   const User = Schema.Struct({
@@ -9,28 +9,29 @@ describe.concurrent("OpenAPI", () => {
   });
 
   class NotFoundError extends Schema.ErrorClass<NotFoundError>("NotFoundError")(
-    { message: Schema.String },
-    { httpStatus: 404 },
+    {
+      message: Schema.String,
+    },
   ) {}
 
   const contract = {
     "/users": {
       get: {
         description: "List all users",
-        success: Schema.Array(User),
+        success: response(Schema.Array(User)),
       },
       post: {
         description: "Create a new user",
         body: Schema.Struct({ name: Schema.String }),
-        success: httpStatus(User, 201),
+        success: response(User, { status: 201 }),
       },
     },
     "/users/{id}": {
       get: {
         description: "Get user by ID",
         path: { id: Schema.Number },
-        success: User,
-        failure: NotFoundError,
+        success: response(User),
+        failure: response(NotFoundError, { status: 404 }),
       },
     },
   };
@@ -81,7 +82,7 @@ describe.concurrent("OpenAPI", () => {
     expect(requestBody?.content["application/json"]).toBeDefined();
   });
 
-  it("uses httpStatus annotation for response codes", () => {
+  it("uses status from response() for response codes", () => {
     const spec = OpenAPI.from(contract, { title: "Test", version: "1.0.0" });
     const responses = spec.paths["/users"]?.post?.responses;
     expect(responses?.["201"]).toBeDefined();
@@ -93,5 +94,51 @@ describe.concurrent("OpenAPI", () => {
     const responses = spec.paths["/users/{id}"]?.get?.responses;
     expect(responses?.["200"]).toBeDefined();
     expect(responses?.["404"]).toBeDefined();
+  });
+
+  it("includes response headers in OpenAPI spec", () => {
+    const contractWithHeaders = {
+      "/items": {
+        get: {
+          success: response(Schema.Array(Schema.String), {
+            headers: {
+              "X-Total-Count": Schema.Number,
+              "X-Page": Schema.Number,
+            },
+          }),
+        },
+      },
+    };
+
+    const spec = OpenAPI.from(contractWithHeaders, {
+      title: "Test",
+      version: "1.0.0",
+    });
+    const getOp = spec.paths["/items"]?.get;
+    expect(getOp?.responses["200"]?.headers).toBeDefined();
+    expect(getOp?.responses["200"]?.headers?.["X-Total-Count"]).toBeDefined();
+    expect(getOp?.responses["200"]?.headers?.["X-Page"]).toBeDefined();
+  });
+
+  it("supports union responses with multiple status codes", () => {
+    const contractWithUnion = {
+      "/items": {
+        post: {
+          body: Schema.Struct({ name: Schema.String }),
+          success: response.union(
+            response(Schema.Struct({ id: Schema.Number }), { status: 201 }),
+            response(Schema.Struct({ id: Schema.Number }), { status: 200 }),
+          ),
+        },
+      },
+    };
+
+    const spec = OpenAPI.from(contractWithUnion, {
+      title: "Test",
+      version: "1.0.0",
+    });
+    const responses = spec.paths["/items"]?.post?.responses;
+    expect(responses?.["201"]).toBeDefined();
+    expect(responses?.["200"]).toBeDefined();
   });
 });

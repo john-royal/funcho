@@ -5,12 +5,12 @@ Funcho is a contract-first HTTP router for [Effect](https://effect.website). Def
 ## Features
 
 - **Contract-first design** - Define routes, parameters, and responses as schemas before implementing handlers
-- **Full type safety** - Request context (path, query, headers, body) and responses are fully typed based on contracts
+- **Full type safety** - Request context and responses are fully typed, including status codes and headers
+- **Typed response helpers** - `ctx.respond()` and `ctx.fail()` are typed based on your contract
 - **Automatic validation** - Path, query, header, and body parameters are validated against schemas
 - **OpenAPI generation** - Generate OpenAPI 3.0 specs directly from contracts
 - **Effect-native** - Built on Effect for composable, type-safe error handling
 - **Runtime agnostic** - Works with Cloudflare Workers, Bun, Node.js, or any Fetch API-compatible runtime
-- **Custom response control** - Full control over status codes, headers, and response bodies
 
 ## Installation
 
@@ -24,36 +24,46 @@ npm install funcho effect
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { defineContract, FetchHandler } from "funcho";
+import { defineContract, FetchHandler, response } from "funcho";
 
-// 1. Define your contract
+// 1. Define your contract with typed responses
 const Contract = defineContract({
   "/users": {
     get: {
       query: { limit: Schema.optional(Schema.NumberFromString) },
-      success: Schema.Array(Schema.Struct({ id: Schema.Number, name: Schema.String })),
+      success: response(Schema.Array(Schema.Struct({ id: Schema.Number, name: Schema.String }))),
     },
     post: {
       body: Schema.Struct({ name: Schema.String }),
-      success: Schema.Struct({ id: Schema.Number, name: Schema.String }),
+      success: response(
+        Schema.Struct({ id: Schema.Number, name: Schema.String }),
+        { status: 201 },
+      ),
     },
   },
   "/users/{id}": {
     get: {
       path: { id: Schema.NumberFromString },
-      success: Schema.Struct({ id: Schema.Number, name: Schema.String }),
+      success: response(Schema.Struct({ id: Schema.Number, name: Schema.String })),
+      failure: response(Schema.Struct({ message: Schema.String }), { status: 404 }),
     },
   },
 });
 
-// 2. Implement the contract
+// 2. Implement the contract with typed ctx.respond() and ctx.fail()
 const ContractImpl = Layer.sync(Contract, () => ({
   "/users": {
-    get: (ctx) => Effect.succeed([{ id: 1, name: "Alice" }].slice(0, ctx.query.limit ?? 10)),
-    post: (ctx) => Effect.succeed({ id: 2, name: ctx.body.name }),
+    get: (ctx) => Effect.succeed(ctx.respond([{ id: 1, name: "Alice" }])),
+    post: (ctx) => Effect.succeed(ctx.respond({ id: 2, name: ctx.body.name })),
   },
   "/users/{id}": {
-    get: (ctx) => Effect.succeed({ id: ctx.path.id, name: "Alice" }),
+    get: (ctx) => Effect.gen(function* () {
+      const user = users.find((u) => u.id === ctx.path.id);
+      if (!user) {
+        return yield* Effect.fail({ message: "User not found" });
+      }
+      return ctx.respond(user);
+    }),
   },
 }));
 
@@ -66,9 +76,121 @@ const handler = Effect.runSync(
 Bun.serve({ fetch: handler });
 ```
 
+## Response Definition
+
+Use the `response()` helper to define response types with status codes and headers:
+
+```typescript
+import { response } from "funcho";
+
+// Simple response (defaults to status 200)
+response(Schema.String)
+
+// With custom status code
+response(User, { status: 201 })
+
+// With typed headers
+response(Schema.Array(User), {
+  headers: { "X-Total-Count": Schema.Number },
+})
+
+// With both status and headers
+response(User, {
+  status: 201,
+  headers: { "X-Request-Id": Schema.String },
+})
+```
+
+### Union Responses
+
+When a route can return different status codes, use `response.union()`:
+
+```typescript
+const Contract = defineContract({
+  "/items": {
+    post: {
+      body: Schema.Struct({ name: Schema.String }),
+      // Can return 201 (created) or 200 (already exists)
+      success: response.union(
+        response(Item, { status: 201 }),
+        response(Item, { status: 200 }),
+      ),
+    },
+  },
+});
+
+// In handler, status is required when multiple options exist
+post: (ctx) => Effect.gen(function* () {
+  if (exists) {
+    return ctx.respond(item, { status: 200 });
+  }
+  return ctx.respond(newItem, { status: 201 });
+})
+```
+
+## Handler Context
+
+Each route handler receives a typed context with:
+
+| Property | Description |
+|----------|-------------|
+| `ctx.path` | Decoded path parameters |
+| `ctx.query` | Decoded query parameters |
+| `ctx.headers` | Decoded request headers |
+| `ctx.body` | Decoded request body |
+| `ctx.respond(data, options?)` | Create a typed success response |
+
+### `ctx.respond()`
+
+Creates a success response. Status and headers are type-checked based on the contract:
+
+```typescript
+// Simple response (status inferred from contract)
+ctx.respond({ id: 1, name: "Alice" })
+
+// With typed headers (required if defined in contract)
+ctx.respond(users, { headers: { "X-Total-Count": users.length } })
+
+// With explicit status (required for union responses)
+ctx.respond(user, { status: 201, headers: { "X-Request-Id": requestId } })
+```
+
+### Error Handling in Handlers
+
+Errors that match the contract's `failure` type are **automatically wrapped** with the correct status code. Just use `Effect.fail()`:
+
+```typescript
+// Error is automatically wrapped with 404 status from contract
+get: (ctx) => Effect.gen(function* () {
+  const user = users.find(u => u.id === ctx.path.id);
+  if (!user) {
+    return yield* Effect.fail(
+      new UserNotFoundError({ message: "User not found" })
+    );
+  }
+  return ctx.respond(user);
+})
+
+// Union failures - each error type gets its defined status
+put: (ctx) => Effect.gen(function* () {
+  if (notFound) {
+    return yield* Effect.fail(new NotFoundError({ ... })); // 404
+  }
+  if (conflict) {
+    return yield* Effect.fail(new ConflictError({ ... })); // 409
+  }
+  return ctx.respond(updated);
+})
+```
+
+**Key points:**
+- Errors matching the contract `failure` type are auto-wrapped with their status code
+- Each error type must map to exactly one status code in the contract
+- Errors not in the contract go through `formatError`
+
 ## Contract Definition
 
-Contracts define the shape of your API using Effect schemas. Each route can specify:
+Contracts define the shape of your API:
 
 | Field | Description |
 |-------|-------------|
@@ -76,10 +198,9 @@ Contracts define the shape of your API using Effect schemas. Each route can spec
 | `query` | Query parameter schemas |
 | `headers` | Request header schemas |
 | `body` | Request body schema |
-| `success` | Success response schema |
-| `failure` | Error response schema |
+| `success` | Success response definition using `response()` |
+| `failure` | Failure response definition using `response()` or `response.union()` |
 | `description` | Route description (used in OpenAPI) |
-| `responseHeaders` | Response header schemas (used in OpenAPI) |
 
 ```typescript
 const Contract = defineContract({
@@ -90,9 +211,13 @@ const Contract = defineContract({
       headers: { "x-request-id": Schema.String },
       query: { notify: Schema.optional(Schema.BooleanFromString) },
       body: Schema.Struct({ name: Schema.String, price: Schema.Number }),
-      success: Schema.Struct({ id: Schema.Number, name: Schema.String }),
-      failure: ItemNotFoundError,
-      responseHeaders: { "x-updated-at": Schema.String },
+      success: response(Item, {
+        headers: { "x-updated-at": Schema.String },
+      }),
+      failure: response.union(
+        response(NotFoundError, { status: 404 }),
+        response(ValidationError, { status: 400 }),
+      ),
     },
   },
 });
@@ -100,88 +225,35 @@ const Contract = defineContract({
 
 ### Strict Type Checking
 
-Contracts enforce strict property checking. Adding unknown properties to a route definition causes a type error:
+Contracts enforce strict property checking. Adding unknown properties causes a type error:
 
 ```typescript
 const Contract = defineContract({
   "/users": {
     get: {
-      success: Schema.Array(Schema.String),
-      unknownProperty: "value", // Type error: 'unknownProperty' does not exist
+      success: response(Schema.Array(Schema.String)),
+      unknownProperty: "value", // Type error!
     },
   },
 });
-```
-
-## Response Helpers
-
-Use `Respond` helpers to control status codes, headers, and status text:
-
-```typescript
-import { Respond } from "funcho";
-
-// 200 OK with custom headers
-Respond.ok(data, { headers: { "X-Custom": "value" } });
-
-// 201 Created
-Respond.created(newResource, { statusText: "Resource Created" });
-
-// 202 Accepted
-Respond.accepted({ jobId: "abc123" });
-
-// 204 No Content
-Respond.noContent();
-
-// Custom status code
-Respond.custom(data, 301, { headers: { Location: "/new-path" } });
-```
-
-### Custom Response Classes
-
-Implement `ResponseBody` for full control over response serialization:
-
-```typescript
-import { ResponseBody, ResponseBodySymbol } from "funcho";
-
-class FileDownload implements ResponseBody {
-  readonly [ResponseBodySymbol] = true as const;
-
-  constructor(readonly content: string, readonly filename: string) {}
-
-  toResponse() {
-    return {
-      body: this.content,
-      status: 200,
-      headers: {
-        "Content-Type": "text/csv",
-        "Content-Disposition": `attachment; filename="${this.filename}"`,
-      },
-    };
-  }
-}
-
-// Use in handler
-"/export": {
-  get: () => Effect.succeed(new FileDownload("id,name\n1,Alice", "users.csv")),
-}
 ```
 
 ## Error Handling
 
 ### Domain Errors
 
-Define domain-specific errors using `Schema.ErrorClass` with HTTP status annotations:
+Define domain-specific errors using `Schema.ErrorClass`:
 
 ```typescript
 import * as Schema from "effect/Schema";
 
 class UserNotFoundError extends Schema.ErrorClass<UserNotFoundError>(
   "UserNotFoundError"
-)({ message: Schema.String }, { httpStatus: 404 }) {}
+)({ message: Schema.String, userId: Schema.optional(Schema.Number) }) {}
 
-class EmailAlreadyExistsError extends Schema.ErrorClass<EmailAlreadyExistsError>(
-  "EmailAlreadyExistsError"
-)({ message: Schema.String, email: Schema.String }, { httpStatus: 409 }) {}
+class EmailExistsError extends Schema.ErrorClass<EmailExistsError>(
+  "EmailExistsError"
+)({ message: Schema.String }) {}
 ```
 
 Use errors in contracts and handlers:
@@ -191,25 +263,28 @@ const Contract = defineContract({
   "/users/{id}": {
     get: {
       path: { id: Schema.NumberFromString },
-      success: User,
-      failure: UserNotFoundError,
+      success: response(User),
+      failure: response(UserNotFoundError, { status: 404 }),
     },
   },
 });
 
-// In handler
+// In handler - error is auto-wrapped with 404 status from contract
 get: (ctx) => Effect.gen(function* () {
   const user = users.find((u) => u.id === ctx.path.id);
   if (!user) {
-    return yield* new UserNotFoundError({ message: `User ${ctx.path.id} not found` });
+    return yield* Effect.fail(new UserNotFoundError({
+      message: `User ${ctx.path.id} not found`,
+      userId: ctx.path.id,
+    }));
   }
-  return user;
+  return ctx.respond(user);
 }),
 ```
 
 ### Custom Error Formatting
 
-Customize error responses with `formatError`:
+Customize error responses for errors that don't match the contract's `failure` types:
 
 ```typescript
 import { FetchHandler, ValidationError, type ErrorResponse } from "funcho";
@@ -219,12 +294,6 @@ const formatError = (error: unknown, request: Request): ErrorResponse => {
     return {
       status: 400,
       body: { type: "validation_error", message: error.message, issues: error.issues },
-    };
-  }
-  if (error instanceof UserNotFoundError) {
-    return {
-      status: 404,
-      body: { type: "not_found", message: error.message },
     };
   }
   return {
@@ -238,33 +307,9 @@ const handler = Effect.runSync(
 );
 ```
 
-### Errors with Custom Response Bodies
-
-Errors can implement `ResponseBody` for full control over their HTTP response. This takes precedence over `formatError`:
-
-```typescript
-class CustomApiError
-  extends Schema.ErrorClass<CustomApiError>("CustomApiError")(
-    { message: Schema.String, code: Schema.String },
-    { httpStatus: 422 }
-  )
-  implements ResponseBody
-{
-  readonly [ResponseBodySymbol] = true as const;
-
-  toResponse() {
-    return {
-      body: JSON.stringify({ error: this.code, message: this.message }),
-      status: 422,
-      headers: { "X-Error-Code": this.code },
-    };
-  }
-}
-```
-
 ### Built-in Errors
 
-Funcho provides built-in error classes:
+Funcho provides built-in error classes for routing errors:
 
 | Error | Status | Description |
 |-------|--------|-------------|
@@ -273,47 +318,9 @@ Funcho provides built-in error classes:
 | `MethodNotAllowedError` | 405 | HTTP method not allowed for route |
 | `InternalServerError` | 500 | Unexpected server error |
 
-## Schema Annotations
+## Streaming Responses
 
-### HTTP Status
-
-Set the default status code for success responses:
-
-```typescript
-import { httpStatus } from "funcho";
-
-const Contract = defineContract({
-  "/users": {
-    post: {
-      body: Schema.Struct({ name: Schema.String }),
-      success: httpStatus(User, 201), // Returns 201 Created
-    },
-    delete: {
-      success: httpStatus(Schema.Void, 204), // Returns 204 No Content
-    },
-  },
-});
-```
-
-### Content Type
-
-Set custom content types:
-
-```typescript
-import { contentType } from "funcho";
-
-const Contract = defineContract({
-  "/report": {
-    get: {
-      success: contentType(Schema.String, "text/csv"),
-    },
-  },
-});
-```
-
-### Stream Body
-
-Handle streaming responses:
+Handle streaming responses with `StreamBody`:
 
 ```typescript
 import { StreamBody } from "funcho";
@@ -321,13 +328,13 @@ import { StreamBody } from "funcho";
 const Contract = defineContract({
   "/download": {
     get: {
-      success: StreamBody, // ReadableStream with application/octet-stream
+      success: response(StreamBody),
     },
   },
 });
 
 // In handler
-get: () => Effect.succeed(new ReadableStream({ /* ... */ })),
+get: (ctx) => Effect.succeed(ctx.respond(new ReadableStream({ /* ... */ }))),
 ```
 
 ## OpenAPI Generation
@@ -354,8 +361,8 @@ if (url.pathname === "/openapi.json") {
 The generated spec includes:
 - Path and query parameters with JSON Schema types
 - Request body schemas
-- Success and error response schemas
-- Response headers (from `responseHeaders` field)
+- Success and error responses with their status codes
+- Response headers
 - Route descriptions
 
 ## Runtime Examples
@@ -399,8 +406,9 @@ createServer(async (req, res) => {
 See [`examples/users-api.ts`](./examples/users-api.ts) for a complete CRUD API example demonstrating:
 - Contract definition with multiple routes
 - Path, query, and body parameter validation
-- Custom response helpers with headers
-- Domain error handling with `ResponseBody`
+- Typed response headers
+- Union responses for different status codes
+- Auto-wrapped domain errors with `Effect.fail()`
 - Custom error formatting
 - OpenAPI spec generation
 
@@ -409,6 +417,18 @@ See [`examples/users-api.ts`](./examples/users-api.ts) for a complete CRUD API e
 ### `defineContract(contract)`
 
 Creates a typed contract service from a contract definition.
+
+### `response(schema, options?)`
+
+Creates a response definition with optional status and headers.
+
+Options:
+- `status?: number` - HTTP status code (default: 200)
+- `headers?: Record<string, Schema.Top>` - Response header schemas
+
+### `response.union(...responses)`
+
+Creates a union of response definitions for routes that can return multiple status codes.
 
 ### `FetchHandler.from(contract, options?)`
 
@@ -421,28 +441,15 @@ Options:
 
 Generates an OpenAPI 3.0 spec from a contract.
 
-### `Respond`
-
-Response helpers:
-- `Respond.ok(data, options?)` - 200 OK
-- `Respond.created(data, options?)` - 201 Created
-- `Respond.accepted(data, options?)` - 202 Accepted
-- `Respond.noContent(options?)` - 204 No Content
-- `Respond.custom(data, status, options?)` - Custom status
-
-### Schema Helpers
-
-- `httpStatus(schema, status)` - Annotate schema with HTTP status
-- `contentType(schema, type)` - Annotate schema with content type
-- `StreamBody` - Schema for `ReadableStream` responses
-
 ### Type Exports
 
 - `Contract` - Contract type
 - `RouteDefinition` - Route definition type
 - `Implementation<C>` - Implementation type for contract `C`
 - `ContractService<C>` - Service type for contract `C`
-- `ResponseBody` - Interface for custom response serialization
+- `ResponseSchema` - Response schema type
+- `ResponseUnion` - Response union type
+- `TypedResponse` - Typed response wrapper
 - `ErrorResponse` - Error response shape for `formatError`
 
 ## License

@@ -1,6 +1,12 @@
 import * as Schema from "effect/Schema";
 import type { Contract, HttpMethod, RouteDefinition } from "./contract.js";
-import { getHttpStatus } from "./schema.js";
+import {
+  type AnyResponseSchema,
+  getBodySchema,
+  getResponseSchemas,
+  isResponseSchema,
+  isResponseUnion,
+} from "./schema.js";
 
 export interface OpenAPIInfo {
   readonly title: string;
@@ -122,44 +128,59 @@ const buildRequestBody = (
 };
 
 const buildResponseHeaders = (
-  definition: RouteDefinition,
+  responseSchema: AnyResponseSchema,
 ): Record<string, OpenAPIResponseHeader> | undefined => {
-  if (!definition.responseHeaders) return undefined;
-  const headers: Record<string, OpenAPIResponseHeader> = {};
-  for (const [name, schema] of Object.entries(definition.responseHeaders)) {
-    headers[name] = {
-      schema: toJsonSchema(schema),
-    };
+  const schemas = getResponseSchemas(responseSchema);
+  const allHeaders: Record<string, OpenAPIResponseHeader> = {};
+
+  for (const schema of schemas) {
+    if (isResponseSchema(schema) && schema.headers) {
+      for (const [name, headerSchema] of Object.entries(schema.headers)) {
+        allHeaders[name] = {
+          schema: toJsonSchema(headerSchema),
+        };
+      }
+    }
   }
-  return headers;
+
+  return Object.keys(allHeaders).length > 0 ? allHeaders : undefined;
 };
 
 const buildResponses = (
   definition: RouteDefinition,
 ): Record<string, OpenAPIResponse> => {
   const responses: Record<string, OpenAPIResponse> = {};
-  const successStatus = getHttpStatus(definition.success) ?? 200;
-  const responseHeaders = buildResponseHeaders(definition);
-  responses[String(successStatus)] = {
-    description: "Successful response",
-    headers: responseHeaders,
-    content: {
-      "application/json": {
-        schema: toJsonSchema(definition.success),
-      },
-    },
-  };
-  if (definition.failure) {
-    const failureStatus = getHttpStatus(definition.failure) ?? 400;
-    responses[String(failureStatus)] = {
-      description: "Error response",
+
+  const successSchemas = getResponseSchemas(definition.success);
+  for (const schema of successSchemas) {
+    const status = String(schema.status);
+    const headers = buildResponseHeaders(schema);
+    responses[status] = {
+      description: "Successful response",
+      headers,
       content: {
         "application/json": {
-          schema: toJsonSchema(definition.failure),
+          schema: toJsonSchema(schema.body),
         },
       },
     };
   }
+
+  if (definition.failure) {
+    const failureSchemas = getResponseSchemas(definition.failure);
+    for (const schema of failureSchemas) {
+      const status = String(schema.status);
+      responses[status] = {
+        description: "Error response",
+        content: {
+          "application/json": {
+            schema: toJsonSchema(schema.body),
+          },
+        },
+      };
+    }
+  }
+
   return responses;
 };
 

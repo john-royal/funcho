@@ -1,7 +1,11 @@
 import type * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import * as ServiceMap from "effect/ServiceMap";
-import type { FunchoResponse, ResponseBody } from "./response.js";
+import type {
+  AnyResponseSchema,
+  ResponseSchema,
+  ResponseUnion,
+} from "./schema.js";
 
 export type HttpMethod =
   | "get"
@@ -18,9 +22,8 @@ export interface RouteDefinition {
   readonly query?: Record<string, Schema.Top>;
   readonly headers?: Record<string, Schema.Top>;
   readonly body?: Schema.Top;
-  readonly success: Schema.Top;
-  readonly failure?: Schema.Top;
-  readonly responseHeaders?: Record<string, Schema.Top>;
+  readonly success: AnyResponseSchema;
+  readonly failure?: AnyResponseSchema;
 }
 
 type SameShape<Out, In extends Out> = In & {
@@ -56,6 +59,118 @@ type DecodeSchemaRecord<R extends SchemaRecord | undefined> =
     ? { readonly [K in keyof R]: R[K]["Type"] }
     : undefined;
 
+type EncodeSchemaRecord<R extends Record<string, Schema.Top> | undefined> =
+  R extends Record<string, Schema.Top>
+    ? { readonly [K in keyof R]: R[K]["Type"] }
+    : Record<string, never>;
+
+type ExtractStatus<R extends AnyResponseSchema> =
+  R extends ResponseSchema<infer _B, infer S, infer _H>
+    ? S
+    : R extends ResponseUnion<infer Responses>
+      ? Responses[number] extends ResponseSchema<infer _B, infer S, infer _H>
+        ? S
+        : never
+      : never;
+
+type ExtractBody<R extends AnyResponseSchema> =
+  R extends ResponseSchema<infer B, infer _S, infer _H>
+    ? B["Type"]
+    : R extends ResponseUnion<infer Responses>
+      ? Responses[number] extends ResponseSchema<infer B, infer _S, infer _H>
+        ? B["Type"]
+        : never
+      : never;
+
+type ExtractHeaders<R extends AnyResponseSchema> =
+  R extends ResponseSchema<infer _B, infer _S, infer H>
+    ? EncodeSchemaRecord<H>
+    : R extends ResponseUnion<infer Responses>
+      ? Responses[number] extends ResponseSchema<infer _B, infer _S, infer H>
+        ? EncodeSchemaRecord<H>
+        : Record<string, never>
+      : Record<string, never>;
+
+type HasHeaders<R extends AnyResponseSchema> =
+  R extends ResponseSchema<infer _B, infer _S, infer H>
+    ? keyof H extends never
+      ? false
+      : true
+    : R extends ResponseUnion<infer Responses>
+      ? Responses[number] extends ResponseSchema<infer _B, infer _S, infer H>
+        ? keyof H extends never
+          ? false
+          : true
+        : false
+      : false;
+
+type IsSingleResponse<R extends AnyResponseSchema> = R extends ResponseSchema
+  ? true
+  : R extends ResponseUnion<infer Responses>
+    ? Responses["length"] extends 1
+      ? true
+      : false
+    : false;
+
+export interface TypedResponse<
+  Body = unknown,
+  Status extends number = number,
+  Headers extends Record<string, unknown> = Record<string, unknown>,
+> {
+  readonly __brand: "TypedResponse";
+  readonly body: Body;
+  readonly status: Status;
+  readonly headers: Headers;
+}
+
+type RespondOptions<
+  R extends AnyResponseSchema,
+  Single extends boolean,
+  HasH extends boolean,
+> = Single extends true
+  ? HasH extends true
+    ? { readonly headers: ExtractHeaders<R> }
+    : { readonly headers?: ExtractHeaders<R> } | void
+  : HasH extends true
+    ? { readonly status: ExtractStatus<R>; readonly headers: ExtractHeaders<R> }
+    : {
+        readonly status: ExtractStatus<R>;
+        readonly headers?: ExtractHeaders<R>;
+      };
+
+type RespondFn<R extends AnyResponseSchema> =
+  IsSingleResponse<R> extends true
+    ? HasHeaders<R> extends true
+      ? (
+          body: ExtractBody<R>,
+          options: {
+            readonly status?: ExtractStatus<R>;
+            readonly headers: ExtractHeaders<R>;
+          },
+        ) => TypedResponse<ExtractBody<R>, ExtractStatus<R>, ExtractHeaders<R>>
+      : (
+          body: ExtractBody<R>,
+          options?: {
+            readonly status?: ExtractStatus<R>;
+            readonly headers?: ExtractHeaders<R>;
+          },
+        ) => TypedResponse<ExtractBody<R>, ExtractStatus<R>, ExtractHeaders<R>>
+    : HasHeaders<R> extends true
+      ? (
+          body: ExtractBody<R>,
+          options: {
+            readonly status: ExtractStatus<R>;
+            readonly headers: ExtractHeaders<R>;
+          },
+        ) => TypedResponse<ExtractBody<R>, ExtractStatus<R>, ExtractHeaders<R>>
+      : (
+          body: ExtractBody<R>,
+          options: {
+            readonly status: ExtractStatus<R>;
+            readonly headers?: ExtractHeaders<R>;
+          },
+        ) => TypedResponse<ExtractBody<R>, ExtractStatus<R>, ExtractHeaders<R>>;
+
 type HandlerContext<Route extends RouteDefinition> = {
   readonly path: DecodeSchemaRecord<Route["path"]>;
   readonly query: DecodeSchemaRecord<Route["query"]>;
@@ -63,13 +178,18 @@ type HandlerContext<Route extends RouteDefinition> = {
   readonly body: Route["body"] extends Schema.Top
     ? Route["body"]["Type"]
     : undefined;
+  readonly respond: RespondFn<Route["success"]>;
 };
 
-type HandlerResult<T> = T | FunchoResponse<T> | ResponseBody;
-
 type HandlerEffect<Route extends RouteDefinition> = Effect.Effect<
-  HandlerResult<Route["success"]["Type"]>,
-  Route["failure"] extends Schema.Top ? Route["failure"]["Type"] : never
+  TypedResponse<
+    ExtractBody<Route["success"]>,
+    ExtractStatus<Route["success"]>,
+    ExtractHeaders<Route["success"]>
+  >,
+  Route["failure"] extends AnyResponseSchema
+    ? ExtractBody<Route["failure"]>
+    : never
 >;
 
 type RouteHandler<Route extends RouteDefinition> = (
@@ -102,3 +222,26 @@ export const defineContract = <const C extends Contract>(
   };
   return service as ContractService<C> & { readonly Contract: C };
 };
+
+export const createTypedResponse = <
+  Body,
+  Status extends number,
+  Headers extends Record<string, unknown>,
+>(
+  body: Body,
+  status: Status,
+  headers: Headers,
+): TypedResponse<Body, Status, Headers> =>
+  ({ __brand: "TypedResponse", body, status, headers }) as TypedResponse<
+    Body,
+    Status,
+    Headers
+  >;
+
+export const isTypedResponse = (
+  value: unknown,
+): value is TypedResponse<unknown, number, Record<string, unknown>> =>
+  value !== null &&
+  typeof value === "object" &&
+  "__brand" in value &&
+  value.__brand === "TypedResponse";

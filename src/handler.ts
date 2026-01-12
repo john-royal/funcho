@@ -5,7 +5,9 @@ import type {
   ContractService,
   Implementation,
   RouteDefinition,
+  TypedResponse,
 } from "./contract.js";
+import { createTypedResponse, isTypedResponse } from "./contract.js";
 import {
   MethodNotAllowedError,
   NotFoundError,
@@ -18,8 +20,11 @@ import {
   matchRoute,
   type RouteMatch,
 } from "./router.js";
-import { isResponseBody } from "./response.js";
-import { getContentType, getHttpStatus, isStreamSchema } from "./schema.js";
+import {
+  type AnyResponseSchema,
+  getDefaultStatus,
+  getResponseSchemas,
+} from "./schema.js";
 
 export interface ErrorResponse {
   readonly status: number;
@@ -57,14 +62,6 @@ const defaultFormatError = (error: unknown): ErrorResponse => {
       },
     };
   }
-  const httpStatus = getHttpStatusFromError(error);
-  if (httpStatus) {
-    const msg = error instanceof Error ? error.message : String(error);
-    return {
-      status: httpStatus,
-      body: { error: error?.constructor?.name ?? "Error", message: msg },
-    };
-  }
   return {
     status: 500,
     body: {
@@ -72,19 +69,6 @@ const defaultFormatError = (error: unknown): ErrorResponse => {
       message: "An unexpected error occurred",
     },
   };
-};
-
-const getHttpStatusFromError = (error: unknown): number | undefined => {
-  if (error && typeof error === "object" && "constructor" in error) {
-    const ctor = error.constructor;
-    if (Schema.isSchema(ctor)) {
-      const annotations = Schema.resolveInto(ctor as Schema.Top);
-      if (annotations && typeof annotations.httpStatus === "number") {
-        return annotations.httpStatus;
-      }
-    }
-  }
-  return undefined;
 };
 
 const decodeSchema = (
@@ -167,7 +151,7 @@ const parseBody = (
 ): Effect.Effect<unknown, ValidationError> =>
   Effect.gen(function* () {
     if (!definition.body) return undefined;
-    if (isStreamSchema(definition.body)) {
+    if (definition.body === Schema.instanceOf(ReadableStream)) {
       return request.body;
     }
     const text = yield* Effect.promise(() => request.text());
@@ -180,42 +164,73 @@ const parseBody = (
     return yield* decodeSchema(definition.body, json, "Invalid request body");
   });
 
-const serializeResponse = (
-  value: unknown,
-  definition: RouteDefinition,
+const serializeTypedResponse = (
+  typed: TypedResponse<unknown, number, Record<string, unknown>>,
 ): Response => {
-  if (isResponseBody(value)) {
-    const output = value.toResponse();
-    const headers = new Headers(output.headers);
-    if (
-      output.body !== null &&
-      typeof output.body === "string" &&
-      !headers.has("Content-Type")
-    ) {
-      headers.set("Content-Type", "application/json");
+  const responseHeaders = new Headers();
+  for (const [key, value] of Object.entries(typed.headers)) {
+    if (value !== undefined && value !== null) {
+      responseHeaders.set(key, String(value));
     }
-    return new Response(output.body, {
-      status: output.status ?? getHttpStatus(definition.success) ?? 200,
-      statusText: output.statusText,
-      headers,
+  }
+
+  if (typed.body === undefined || typed.body === null) {
+    return new Response(null, {
+      status: typed.status,
+      headers: responseHeaders,
     });
   }
-  const status = getHttpStatus(definition.success) ?? 200;
-  if (value instanceof ReadableStream) {
-    const contentType =
-      getContentType(definition.success) ?? "application/octet-stream";
-    return new Response(value, {
-      status,
-      headers: { "Content-Type": contentType },
+
+  if (typed.body instanceof ReadableStream) {
+    if (!responseHeaders.has("Content-Type")) {
+      responseHeaders.set("Content-Type", "application/octet-stream");
+    }
+    return new Response(typed.body, {
+      status: typed.status,
+      headers: responseHeaders,
     });
   }
-  if (value === undefined || value === null) {
-    return new Response(null, { status: status === 200 ? 204 : status });
+
+  if (!responseHeaders.has("Content-Type")) {
+    responseHeaders.set("Content-Type", "application/json");
   }
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: { "Content-Type": "application/json" },
+  return new Response(JSON.stringify(typed.body), {
+    status: typed.status,
+    headers: responseHeaders,
   });
+};
+
+const createRespondFn = (definition: RouteDefinition) => {
+  const defaultStatus = getDefaultStatus(definition.success);
+  return (
+    body: unknown,
+    options?: { status?: number; headers?: Record<string, unknown> },
+  ) =>
+    createTypedResponse(
+      body,
+      options?.status ?? defaultStatus,
+      options?.headers ?? {},
+    );
+};
+
+const matchContractFailure = (
+  error: unknown,
+  failureSchema: AnyResponseSchema | undefined,
+): TypedResponse<unknown, number, Record<string, unknown>> | null => {
+  if (!failureSchema || !error || typeof error !== "object") return null;
+
+  const schemas = getResponseSchemas(failureSchema);
+  for (const schema of schemas) {
+    // Check if error is an instance of the error class defined in the schema
+    // For Schema.ErrorClass, the schema itself is the constructor
+    const ErrorConstructor = schema.body as unknown as {
+      new (...args: unknown[]): unknown;
+    };
+    if (error instanceof ErrorConstructor) {
+      return createTypedResponse(error, schema.status, {});
+    }
+  }
+  return null;
 };
 
 const handleRequest = <C extends Contract>(
@@ -225,71 +240,96 @@ const handleRequest = <C extends Contract>(
   options: FetchHandlerOptions,
 ): Effect.Effect<Response> => {
   const formatError = options.formatError ?? defaultFormatError;
-  return Effect.gen(function* () {
-    const url = new URL(request.url);
-    const matchResult = matchRoute(routes, url.pathname, request.method);
-    if (!isRouteMatch(matchResult)) {
-      if (matchResult.allowedMethods) {
-        const error = new MethodNotAllowedError({
-          message: `Method ${request.method} not allowed`,
-          allowed: [...matchResult.allowedMethods],
-        });
-        const errorResponse = formatError(error, request);
-        return new Response(JSON.stringify(errorResponse.body), {
+
+  const url = new URL(request.url);
+  const matchResult = matchRoute(routes, url.pathname, request.method);
+
+  // Handle route not found or method not allowed
+  if (!isRouteMatch(matchResult)) {
+    if (matchResult.allowedMethods) {
+      const error = new MethodNotAllowedError({
+        message: `Method ${request.method} not allowed`,
+        allowed: [...matchResult.allowedMethods],
+      });
+      const errorResponse = formatError(error, request);
+      return Effect.succeed(
+        new Response(JSON.stringify(errorResponse.body), {
           status: errorResponse.status,
           headers: {
             "Content-Type": "application/json",
             Allow: matchResult.allowedMethods.join(", "),
           },
-        });
-      }
-      const error = new NotFoundError({ message: "Route not found" });
-      const errorResponse = formatError(error, request);
-      return new Response(JSON.stringify(errorResponse.body), {
+        }),
+      );
+    }
+    const error = new NotFoundError({ message: "Route not found" });
+    const errorResponse = formatError(error, request);
+    return Effect.succeed(
+      new Response(JSON.stringify(errorResponse.body), {
         status: errorResponse.status,
         headers: { "Content-Type": "application/json" },
-      });
-    }
-    const match: RouteMatch = matchResult;
-    const pathImpl = impl[match.route.pattern as keyof typeof impl];
-    const methodImpl = pathImpl?.[match.method as keyof typeof pathImpl] as
-      | ((ctx: unknown) => Effect.Effect<unknown, unknown>)
-      | undefined;
-    if (!methodImpl) {
-      const error = new NotFoundError({ message: "Handler not found" });
-      const errorResponse = formatError(error, request);
-      return new Response(JSON.stringify(errorResponse.body), {
+      }),
+    );
+  }
+
+  const match: RouteMatch = matchResult;
+  const pathImpl = impl[match.route.pattern as keyof typeof impl];
+  const methodImpl = pathImpl?.[match.method as keyof typeof pathImpl] as
+    | ((ctx: unknown) => Effect.Effect<unknown, unknown>)
+    | undefined;
+
+  if (!methodImpl) {
+    const error = new NotFoundError({ message: "Handler not found" });
+    const errorResponse = formatError(error, request);
+    return Effect.succeed(
+      new Response(JSON.stringify(errorResponse.body), {
         status: errorResponse.status,
         headers: { "Content-Type": "application/json" },
-      });
-    }
-    const context = yield* Effect.all(
-      {
-        path: parsePath(match.params, match.definition),
-        query: parseQuery(url, match.definition),
-        headers: parseHeaders(request.headers, match.definition),
-        body: parseBody(request, match.definition),
-      },
+      }),
+    );
+  }
+
+  return Effect.gen(function* () {
+    const [path, query, headers, body] = yield* Effect.all(
+      [
+        parsePath(match.params, match.definition),
+        parseQuery(url, match.definition),
+        parseHeaders(request.headers, match.definition),
+        parseBody(request, match.definition),
+      ],
       { concurrency: "unbounded" },
     );
+
+    const context = {
+      path,
+      query,
+      headers,
+      body,
+      respond: createRespondFn(match.definition),
+    };
+
     const result = yield* methodImpl(context);
-    return serializeResponse(result, match.definition);
+
+    if (isTypedResponse(result)) {
+      return serializeTypedResponse(result);
+    }
+
+    return new Response(JSON.stringify(result), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
   }).pipe(
     Effect.catch((error: unknown) => {
-      if (isResponseBody(error)) {
-        const output = error.toResponse();
-        const headers = new Headers(output.headers);
-        if (!headers.has("Content-Type")) {
-          headers.set("Content-Type", "application/json");
-        }
-        return Effect.succeed(
-          new Response(output.body, {
-            status: output.status ?? 500,
-            statusText: output.statusText,
-            headers,
-          }),
-        );
+      // Check if error matches a contract failure type
+      const contractFailure = matchContractFailure(
+        error,
+        match.definition.failure,
+      );
+      if (contractFailure) {
+        return Effect.succeed(serializeTypedResponse(contractFailure));
       }
+
+      // Fall back to formatError for untyped errors
       const errorResponse = formatError(error, request);
       return Effect.succeed(
         new Response(JSON.stringify(errorResponse.body), {

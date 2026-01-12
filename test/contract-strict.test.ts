@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 import { describe, it } from "vitest";
 import { defineContract } from "../src/contract.js";
+import { response } from "../src/schema.js";
 
 describe("Contract strict typing", () => {
   it("allows valid route definitions", () => {
@@ -9,12 +10,12 @@ describe("Contract strict typing", () => {
       "/users": {
         get: {
           description: "List users",
-          success: Schema.Array(Schema.String),
+          success: response(Schema.Array(Schema.String)),
         },
         post: {
           body: Schema.Struct({ name: Schema.String }),
-          success: Schema.String,
-          failure: Schema.String,
+          success: response(Schema.String),
+          failure: response(Schema.String, { status: 400 }),
         },
       },
       "/users/{id}": {
@@ -22,8 +23,9 @@ describe("Contract strict typing", () => {
           path: { id: Schema.String },
           query: { include: Schema.optional(Schema.String) },
           headers: { authorization: Schema.String },
-          success: Schema.String,
-          responseHeaders: { "X-Request-Id": Schema.String },
+          success: response(Schema.String, {
+            headers: { "X-Request-Id": Schema.String },
+          }),
         },
       },
     });
@@ -34,7 +36,7 @@ describe("Contract strict typing", () => {
       "/users": {
         // @ts-expect-error - "typo" is not a valid RouteDefinition property
         get: {
-          success: Schema.String,
+          success: response(Schema.String),
           typo: "this should cause a type error",
         },
       },

@@ -5,11 +5,8 @@ import {
   defineContract,
   type ErrorResponse,
   FetchHandler,
-  httpStatus,
   OpenAPI,
-  Respond,
-  type ResponseBody,
-  ResponseBodySymbol,
+  response,
   ValidationError,
 } from "../src/index.js";
 
@@ -20,34 +17,13 @@ const User = Schema.Struct({
 });
 type User = typeof User.Type;
 
-class UserNotFoundError
-  extends Schema.ErrorClass<UserNotFoundError>("UserNotFoundError")(
-    { message: Schema.String, userId: Schema.optional(Schema.Number) },
-    { httpStatus: 404 },
-  )
-  implements ResponseBody
-{
-  readonly [ResponseBodySymbol] = true as const;
-
-  toResponse() {
-    return {
-      body: JSON.stringify({
-        type: "not_found",
-        resource: "user",
-        message: this.message,
-        userId: this.userId,
-      }),
-      status: 404,
-      headers: {
-        "X-Error-Type": "not_found",
-      },
-    };
-  }
-}
+class UserNotFoundError extends Schema.ErrorClass<UserNotFoundError>(
+  "UserNotFoundError",
+)({ message: Schema.String, userId: Schema.optional(Schema.Number) }) {}
 
 class EmailAlreadyExistsError extends Schema.ErrorClass<EmailAlreadyExistsError>(
   "EmailAlreadyExistsError",
-)({ message: Schema.String }, { httpStatus: 409 }) {}
+)({ message: Schema.String }) {}
 
 const Contract = defineContract({
   "/users": {
@@ -57,14 +33,18 @@ const Contract = defineContract({
         limit: Schema.optional(Schema.NumberFromString),
         offset: Schema.optional(Schema.NumberFromString),
       },
-      success: Schema.Struct({
-        users: Schema.Array(User),
-        total: Schema.Number,
-      }),
-      responseHeaders: {
-        "X-Total-Count": Schema.NumberFromString,
-        "X-Page-Size": Schema.NumberFromString,
-      },
+      success: response(
+        Schema.Struct({
+          users: Schema.Array(User),
+          total: Schema.Number,
+        }),
+        {
+          headers: {
+            "X-Total-Count": Schema.Number,
+            "X-Page-Size": Schema.Number,
+          },
+        },
+      ),
     },
     post: {
       description: "Create a new user",
@@ -72,19 +52,19 @@ const Contract = defineContract({
         name: Schema.String,
         email: Schema.String,
       }),
-      success: httpStatus(User, 201),
-      failure: EmailAlreadyExistsError,
-      responseHeaders: {
-        "X-Request-Id": Schema.String,
-      },
+      success: response(User, {
+        status: 201,
+        headers: { "X-Request-Id": Schema.String },
+      }),
+      failure: response(EmailAlreadyExistsError, { status: 409 }),
     },
   },
   "/users/{id}": {
     get: {
       description: "Get a user by ID",
       path: { id: Schema.NumberFromString },
-      success: User,
-      failure: UserNotFoundError,
+      success: response(User),
+      failure: response(UserNotFoundError, { status: 404 }),
     },
     put: {
       description: "Update a user",
@@ -93,14 +73,17 @@ const Contract = defineContract({
         name: Schema.optional(Schema.String),
         email: Schema.optional(Schema.String),
       }),
-      success: User,
-      failure: Schema.Union([UserNotFoundError, EmailAlreadyExistsError]),
+      success: response(User),
+      failure: response.union(
+        response(UserNotFoundError, { status: 404 }),
+        response(EmailAlreadyExistsError, { status: 409 }),
+      ),
     },
     delete: {
       description: "Delete a user",
       path: { id: Schema.NumberFromString },
-      success: httpStatus(Schema.Void, 204),
-      failure: UserNotFoundError,
+      success: response(Schema.Void, { status: 204 }),
+      failure: response(UserNotFoundError, { status: 404 }),
     },
   },
 });
@@ -118,12 +101,12 @@ const ContractImpl = Layer.sync(Contract, () => ({
       const limit = ctx.query.limit ?? 10;
       const slice = users.slice(offset, offset + limit);
       return Effect.succeed(
-        Respond.ok(
+        ctx.respond(
           { users: slice, total: users.length },
           {
             headers: {
-              "X-Total-Count": String(users.length),
-              "X-Page-Size": String(limit),
+              "X-Total-Count": users.length,
+              "X-Page-Size": limit,
             },
           },
         ),
@@ -133,9 +116,9 @@ const ContractImpl = Layer.sync(Contract, () => ({
       Effect.gen(function* () {
         const exists = users.some((u) => u.email === ctx.body.email);
         if (exists) {
-          return yield* new EmailAlreadyExistsError({
-            message: "Email already in use",
-          });
+          return yield* Effect.fail(
+            new EmailAlreadyExistsError({ message: "Email already in use" }),
+          );
         }
         const user: User = {
           id: nextId++,
@@ -143,9 +126,8 @@ const ContractImpl = Layer.sync(Contract, () => ({
           email: ctx.body.email,
         };
         users.push(user);
-        return Respond.created(user, {
+        return ctx.respond(user, {
           headers: { "X-Request-Id": crypto.randomUUID() },
-          statusText: "User Created",
         });
       }),
   },
@@ -154,30 +136,34 @@ const ContractImpl = Layer.sync(Contract, () => ({
       Effect.gen(function* () {
         const user = users.find((u) => u.id === ctx.path.id);
         if (!user) {
-          return yield* new UserNotFoundError({
-            message: `User ${ctx.path.id} not found`,
-            userId: ctx.path.id,
-          });
+          return yield* Effect.fail(
+            new UserNotFoundError({
+              message: `User ${ctx.path.id} not found`,
+              userId: ctx.path.id,
+            }),
+          );
         }
-        return user;
+        return ctx.respond(user);
       }),
     put: (ctx) =>
       Effect.gen(function* () {
         const index = users.findIndex((u) => u.id === ctx.path.id);
         if (index === -1) {
-          return yield* new UserNotFoundError({
-            message: `User ${ctx.path.id} not found`,
-            userId: ctx.path.id,
-          });
+          return yield* Effect.fail(
+            new UserNotFoundError({
+              message: `User ${ctx.path.id} not found`,
+              userId: ctx.path.id,
+            }),
+          );
         }
         if (ctx.body.email) {
           const emailExists = users.some(
             (u) => u.email === ctx.body.email && u.id !== ctx.path.id,
           );
           if (emailExists) {
-            return yield* new EmailAlreadyExistsError({
-              message: "Email already in use",
-            });
+            return yield* Effect.fail(
+              new EmailAlreadyExistsError({ message: "Email already in use" }),
+            );
           }
         }
         const user = users[index]!;
@@ -187,21 +173,21 @@ const ContractImpl = Layer.sync(Contract, () => ({
           email: ctx.body.email ?? user.email,
         };
         users[index] = updated;
-        return updated;
+        return ctx.respond(updated);
       }),
     delete: (ctx) =>
       Effect.gen(function* () {
         const index = users.findIndex((u) => u.id === ctx.path.id);
         if (index === -1) {
-          return yield* new UserNotFoundError({
-            message: `User ${ctx.path.id} not found`,
-            userId: ctx.path.id,
-          });
+          return yield* Effect.fail(
+            new UserNotFoundError({
+              message: `User ${ctx.path.id} not found`,
+              userId: ctx.path.id,
+            }),
+          );
         }
         users.splice(index, 1);
-        return Respond.noContent({
-          headers: { "X-Deleted-Id": String(ctx.path.id) },
-        });
+        return ctx.respond(undefined);
       }),
   },
 }));
@@ -209,7 +195,6 @@ const ContractImpl = Layer.sync(Contract, () => ({
 const formatError = (error: unknown, request: Request): ErrorResponse => {
   const url = new URL(request.url);
 
-  // Validation errors (bad JSON, missing fields, type mismatches)
   if (error instanceof ValidationError) {
     return {
       status: 400,
@@ -222,21 +207,6 @@ const formatError = (error: unknown, request: Request): ErrorResponse => {
     };
   }
 
-  // Note: UserNotFoundError implements ResponseBody, so it bypasses formatError
-  // and uses its own toResponse() method directly.
-
-  if (error instanceof EmailAlreadyExistsError) {
-    return {
-      status: 409,
-      body: {
-        type: "conflict",
-        message: error.message,
-        path: url.pathname,
-      },
-    };
-  }
-
-  // Unexpected errors
   console.error("Unexpected error:", error);
   return {
     status: 500,

@@ -1,29 +1,30 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { compileContract, isRouteMatch, matchRoute } from "../src/router.js";
+import { response } from "../src/schema.js";
 
 describe.concurrent("router", () => {
   const contract = {
     "/users": {
-      get: { success: Schema.Array(Schema.String) },
+      get: { success: response(Schema.Array(Schema.String)) },
       post: {
         body: Schema.Struct({ name: Schema.String }),
-        success: Schema.String,
+        success: response(Schema.String),
       },
     },
     "/users/{id}": {
-      get: { path: { id: Schema.String }, success: Schema.String },
+      get: { path: { id: Schema.String }, success: response(Schema.String) },
       put: {
         path: { id: Schema.String },
         body: Schema.Struct({ name: Schema.String }),
-        success: Schema.String,
+        success: response(Schema.String),
       },
-      delete: { path: { id: Schema.String }, success: Schema.Void },
+      delete: { path: { id: Schema.String }, success: response(Schema.Void) },
     },
     "/users/{userId}/posts/{postId}": {
       get: {
         path: { userId: Schema.String, postId: Schema.String },
-        success: Schema.String,
+        success: response(Schema.String),
       },
     },
   };
