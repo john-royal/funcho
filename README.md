@@ -452,6 +452,45 @@ Generates an OpenAPI 3.0 spec from a contract.
 - `TypedResponse` - Typed response wrapper
 - `ErrorResponse` - Error response shape for `formatError`
 
+## Releases
+
+This project uses automated releases via [semantic-release](https://github.com/semantic-release/semantic-release).
+
+### For Contributors
+
+**Commit Message Format:**
+
+We follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+- `feat: add new feature` → Minor version bump (0.1.0 → 0.2.0)
+- `fix: resolve bug` → Patch version bump (0.1.0 → 0.1.1)
+- `feat!: breaking change` → Major version bump (0.1.0 → 1.0.0)
+- `docs:`, `chore:`, `test:` → No release
+
+**Preview next version:**
+
+```bash
+bun run release:preview
+```
+
+### For Maintainers
+
+**To create a release:**
+
+1. Go to [Actions → Release](https://github.com/john-royal/funcho/actions/workflows/release.yml)
+2. Click "Run workflow"
+3. Options:
+   - Leave empty for auto-detect version from commits
+   - Enter custom version (e.g., `1.0.0`) for manual control
+   - Check "Dry run" to preview without publishing
+
+The workflow will:
+- ✅ Determine version from commits (or use custom version)
+- ✅ Update `package.json` and `CHANGELOG.md`
+- ✅ Create git tag (e.g., `v1.0.0`)
+- ✅ Publish to npm with provenance
+- ✅ Create GitHub Release with auto-generated notes
+
 ## License
 
 MIT

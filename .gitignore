@@ -1,3 +1,7 @@
 node_modules
 dist
 tsconfig.tsbuildinfo
+
+# semantic-release artifacts
+dist-release
+.releaserc.local.json

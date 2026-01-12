@@ -45,6 +45,7 @@
     "format": "biome format --write .",
     "lint": "biome check .",
     "prepublishOnly": "bun run build",
+    "release:preview": "bun run scripts/preview-release.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
@@ -57,7 +58,12 @@
     "@biomejs/biome": "^2.3.11",
     "@effect/language-service": "^0.64.1",
     "@effect/vitest": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/vitest@4d0f6c2",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^11.0.0",
     "@types/bun": "latest",
+    "conventional-changelog-conventionalcommits": "^8.0.0",
+    "semantic-release": "^24.2.0",
     "tsdown": "^0.20.0-beta.1",
     "typescript": "^5.9.3",
     "vitest": "^3"
