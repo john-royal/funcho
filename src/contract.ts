@@ -23,6 +23,27 @@ export interface RouteDefinition {
   readonly responseHeaders?: Record<string, Schema.Top>;
 }
 
+type SameShape<Out, In extends Out> = In & {
+  [K in Exclude<keyof In, keyof Out>]: never;
+};
+
+type StrictRouteDefinition<T extends RouteDefinition> = SameShape<
+  RouteDefinition,
+  T
+>;
+
+type StrictRoutes<T extends Partial<Record<HttpMethod, RouteDefinition>>> = {
+  [M in keyof T]: T[M] extends RouteDefinition
+    ? StrictRouteDefinition<T[M]>
+    : never;
+};
+
+type StrictContract<
+  T extends Record<string, Partial<Record<HttpMethod, RouteDefinition>>>,
+> = {
+  [P in keyof T]: StrictRoutes<T[P]>;
+};
+
 export type Contract = Record<
   string,
   Partial<Record<HttpMethod, RouteDefinition>>
@@ -71,13 +92,13 @@ export interface ContractService<C extends Contract>
   extends ServiceMap.Service<ContractService<C>, Implementation<C>> {}
 
 export const defineContract = <const C extends Contract>(
-  contract: C,
+  contract: StrictContract<C>,
 ): ContractService<C> & { readonly Contract: C } => {
   const service = class extends ServiceMap.Service<
     ContractService<C>,
     Implementation<C>
   >()(`funcho/Contract/${Math.random().toString(36).slice(2)}`) {
-    static readonly Contract = contract;
+    static readonly Contract = contract as C;
   };
   return service as ContractService<C> & { readonly Contract: C };
 };
