@@ -18,6 +18,7 @@ import {
   matchRoute,
   type RouteMatch,
 } from "./router.js";
+import { isResponseBody } from "./response.js";
 import { getContentType, getHttpStatus, isStreamSchema } from "./schema.js";
 
 export interface ErrorResponse {
@@ -183,6 +184,22 @@ const serializeResponse = (
   value: unknown,
   definition: RouteDefinition,
 ): Response => {
+  if (isResponseBody(value)) {
+    const output = value.toResponse();
+    const headers = new Headers(output.headers);
+    if (
+      output.body !== null &&
+      typeof output.body === "string" &&
+      !headers.has("Content-Type")
+    ) {
+      headers.set("Content-Type", "application/json");
+    }
+    return new Response(output.body, {
+      status: output.status ?? getHttpStatus(definition.success) ?? 200,
+      statusText: output.statusText,
+      headers,
+    });
+  }
   const status = getHttpStatus(definition.success) ?? 200;
   if (value instanceof ReadableStream) {
     const contentType =

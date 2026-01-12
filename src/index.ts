@@ -27,8 +27,19 @@ export {
   type OpenAPIParameter,
   type OpenAPIRequestBody,
   type OpenAPIResponse,
+  type OpenAPIResponseHeader,
   type OpenAPISpec,
 } from "./openapi.js";
+
+export {
+  FunchoResponse,
+  isResponseBody,
+  Respond,
+  type ResponseBody,
+  ResponseBodySymbol,
+  type ResponseBodyOutput,
+  type ResponseOptions,
+} from "./response.js";
 
 export {
   contentType,

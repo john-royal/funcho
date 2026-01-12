@@ -3,9 +3,12 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import {
   defineContract,
+  type ErrorResponse,
   FetchHandler,
   httpStatus,
   OpenAPI,
+  Respond,
+  ValidationError,
 } from "../src/index.js";
 
 const User = Schema.Struct({
@@ -35,6 +38,10 @@ const Contract = defineContract({
         users: Schema.Array(User),
         total: Schema.Number,
       }),
+      responseHeaders: {
+        "X-Total-Count": Schema.NumberFromString,
+        "X-Page-Size": Schema.NumberFromString,
+      },
     },
     post: {
       description: "Create a new user",
@@ -44,6 +51,9 @@ const Contract = defineContract({
       }),
       success: httpStatus(User, 201),
       failure: EmailAlreadyExistsError,
+      responseHeaders: {
+        "X-Request-Id": Schema.String,
+      },
     },
   },
   "/users/{id}": {
@@ -84,7 +94,17 @@ const ContractImpl = Layer.sync(Contract, () => ({
       const offset = ctx.query.offset ?? 0;
       const limit = ctx.query.limit ?? 10;
       const slice = users.slice(offset, offset + limit);
-      return Effect.succeed({ users: slice, total: users.length });
+      return Effect.succeed(
+        Respond.ok(
+          { users: slice, total: users.length },
+          {
+            headers: {
+              "X-Total-Count": String(users.length),
+              "X-Page-Size": String(limit),
+            },
+          },
+        ),
+      );
     },
     post: (ctx) =>
       Effect.gen(function* () {
@@ -100,7 +120,10 @@ const ContractImpl = Layer.sync(Contract, () => ({
           email: ctx.body.email,
         };
         users.push(user);
-        return user;
+        return Respond.created(user, {
+          headers: { "X-Request-Id": crypto.randomUUID() },
+          statusText: "User Created",
+        });
       }),
   },
   "/users/{id}": {
@@ -150,12 +173,68 @@ const ContractImpl = Layer.sync(Contract, () => ({
           });
         }
         users.splice(index, 1);
+        return Respond.noContent({
+          headers: { "X-Deleted-Id": String(ctx.path.id) },
+        });
       }),
   },
 }));
 
+const formatError = (error: unknown, request: Request): ErrorResponse => {
+  const url = new URL(request.url);
+
+  // Validation errors (bad JSON, missing fields, type mismatches)
+  if (error instanceof ValidationError) {
+    return {
+      status: 400,
+      body: {
+        type: "validation_error",
+        message: error.message,
+        path: url.pathname,
+        details: error.issues,
+      },
+    };
+  }
+
+  // Domain errors (UserNotFoundError, EmailAlreadyExistsError)
+  if (error instanceof UserNotFoundError) {
+    return {
+      status: 404,
+      body: {
+        type: "not_found",
+        message: error.message,
+        path: url.pathname,
+      },
+    };
+  }
+
+  if (error instanceof EmailAlreadyExistsError) {
+    return {
+      status: 409,
+      body: {
+        type: "conflict",
+        message: error.message,
+        path: url.pathname,
+      },
+    };
+  }
+
+  // Unexpected errors
+  console.error("Unexpected error:", error);
+  return {
+    status: 500,
+    body: {
+      type: "internal_error",
+      message: "An unexpected error occurred",
+      path: url.pathname,
+    },
+  };
+};
+
 const handler = Effect.runSync(
-  FetchHandler.from(Contract).pipe(Effect.provide(ContractImpl)),
+  FetchHandler.from(Contract, { formatError }).pipe(
+    Effect.provide(ContractImpl),
+  ),
 );
 
 Bun.serve({

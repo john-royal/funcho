@@ -41,8 +41,15 @@ export interface OpenAPIRequestBody {
   >;
 }
 
+export interface OpenAPIResponseHeader {
+  readonly description?: string;
+  readonly schema: Record<string, unknown>;
+  readonly required?: boolean;
+}
+
 export interface OpenAPIResponse {
   readonly description: string;
+  readonly headers?: Record<string, OpenAPIResponseHeader>;
   readonly content?: Record<
     string,
     { readonly schema: Record<string, unknown> }
@@ -114,13 +121,28 @@ const buildRequestBody = (
   };
 };
 
+const buildResponseHeaders = (
+  definition: RouteDefinition,
+): Record<string, OpenAPIResponseHeader> | undefined => {
+  if (!definition.responseHeaders) return undefined;
+  const headers: Record<string, OpenAPIResponseHeader> = {};
+  for (const [name, schema] of Object.entries(definition.responseHeaders)) {
+    headers[name] = {
+      schema: toJsonSchema(schema),
+    };
+  }
+  return headers;
+};
+
 const buildResponses = (
   definition: RouteDefinition,
 ): Record<string, OpenAPIResponse> => {
   const responses: Record<string, OpenAPIResponse> = {};
   const successStatus = getHttpStatus(definition.success) ?? 200;
+  const responseHeaders = buildResponseHeaders(definition);
   responses[String(successStatus)] = {
     description: "Successful response",
+    headers: responseHeaders,
     content: {
       "application/json": {
         schema: toJsonSchema(definition.success),

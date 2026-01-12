@@ -1,6 +1,7 @@
 import type * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import * as ServiceMap from "effect/ServiceMap";
+import type { FunchoResponse, ResponseBody } from "./response.js";
 
 export type HttpMethod =
   | "get"
@@ -19,6 +20,7 @@ export interface RouteDefinition {
   readonly body?: Schema.Top;
   readonly success: Schema.Top;
   readonly failure?: Schema.Top;
+  readonly responseHeaders?: Record<string, Schema.Top>;
 }
 
 export type Contract = Record<
@@ -42,8 +44,10 @@ type HandlerContext<Route extends RouteDefinition> = {
     : undefined;
 };
 
+type HandlerResult<T> = T | FunchoResponse<T> | ResponseBody;
+
 type HandlerEffect<Route extends RouteDefinition> = Effect.Effect<
-  Route["success"]["Type"],
+  HandlerResult<Route["success"]["Type"]>,
   Route["failure"] extends Schema.Top ? Route["failure"]["Type"] : never
 >;
 
