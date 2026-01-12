@@ -276,6 +276,20 @@ const handleRequest = <C extends Contract>(
     return serializeResponse(result, match.definition);
   }).pipe(
     Effect.catch((error: unknown) => {
+      if (isResponseBody(error)) {
+        const output = error.toResponse();
+        const headers = new Headers(output.headers);
+        if (!headers.has("Content-Type")) {
+          headers.set("Content-Type", "application/json");
+        }
+        return Effect.succeed(
+          new Response(output.body, {
+            status: output.status ?? 500,
+            statusText: output.statusText,
+            headers,
+          }),
+        );
+      }
       const errorResponse = formatError(error, request);
       return Effect.succeed(
         new Response(JSON.stringify(errorResponse.body), {

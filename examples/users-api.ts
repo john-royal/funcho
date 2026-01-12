@@ -8,6 +8,8 @@ import {
   httpStatus,
   OpenAPI,
   Respond,
+  type ResponseBody,
+  ResponseBodySymbol,
   ValidationError,
 } from "../src/index.js";
 
@@ -18,9 +20,30 @@ const User = Schema.Struct({
 });
 type User = typeof User.Type;
 
-class UserNotFoundError extends Schema.ErrorClass<UserNotFoundError>(
-  "UserNotFoundError",
-)({ message: Schema.String }, { httpStatus: 404 }) {}
+class UserNotFoundError
+  extends Schema.ErrorClass<UserNotFoundError>("UserNotFoundError")(
+    { message: Schema.String, userId: Schema.optional(Schema.Number) },
+    { httpStatus: 404 },
+  )
+  implements ResponseBody
+{
+  readonly [ResponseBodySymbol] = true as const;
+
+  toResponse() {
+    return {
+      body: JSON.stringify({
+        type: "not_found",
+        resource: "user",
+        message: this.message,
+        userId: this.userId,
+      }),
+      status: 404,
+      headers: {
+        "X-Error-Type": "not_found",
+      },
+    };
+  }
+}
 
 class EmailAlreadyExistsError extends Schema.ErrorClass<EmailAlreadyExistsError>(
   "EmailAlreadyExistsError",
@@ -133,6 +156,7 @@ const ContractImpl = Layer.sync(Contract, () => ({
         if (!user) {
           return yield* new UserNotFoundError({
             message: `User ${ctx.path.id} not found`,
+            userId: ctx.path.id,
           });
         }
         return user;
@@ -143,6 +167,7 @@ const ContractImpl = Layer.sync(Contract, () => ({
         if (index === -1) {
           return yield* new UserNotFoundError({
             message: `User ${ctx.path.id} not found`,
+            userId: ctx.path.id,
           });
         }
         if (ctx.body.email) {
@@ -170,6 +195,7 @@ const ContractImpl = Layer.sync(Contract, () => ({
         if (index === -1) {
           return yield* new UserNotFoundError({
             message: `User ${ctx.path.id} not found`,
+            userId: ctx.path.id,
           });
         }
         users.splice(index, 1);
@@ -196,17 +222,8 @@ const formatError = (error: unknown, request: Request): ErrorResponse => {
     };
   }
 
-  // Domain errors (UserNotFoundError, EmailAlreadyExistsError)
-  if (error instanceof UserNotFoundError) {
-    return {
-      status: 404,
-      body: {
-        type: "not_found",
-        message: error.message,
-        path: url.pathname,
-      },
-    };
-  }
+  // Note: UserNotFoundError implements ResponseBody, so it bypasses formatError
+  // and uses its own toResponse() method directly.
 
   if (error instanceof EmailAlreadyExistsError) {
     return {

@@ -281,3 +281,229 @@ describe.concurrent("OpenAPI with responseHeaders", () => {
     expect(getOp?.responses["200"]?.headers?.["X-Page"]).toBeDefined();
   });
 });
+
+describe.concurrent("Error classes implementing ResponseBody", () => {
+  class CustomApiError
+    extends Schema.ErrorClass<CustomApiError>("CustomApiError")(
+      { message: Schema.String, code: Schema.String },
+      { httpStatus: 422 },
+    )
+    implements ResponseBody
+  {
+    readonly [ResponseBodySymbol] = true as const;
+
+    toResponse() {
+      return {
+        body: JSON.stringify({
+          error: "CustomApiError",
+          code: this.code,
+          message: this.message,
+        }),
+        status: 422,
+        headers: {
+          "X-Error-Code": this.code,
+        },
+      };
+    }
+  }
+
+  class HtmlError
+    extends Schema.ErrorClass<HtmlError>("HtmlError")(
+      { message: Schema.String },
+      { httpStatus: 400 },
+    )
+    implements ResponseBody
+  {
+    readonly [ResponseBodySymbol] = true as const;
+
+    toResponse() {
+      return {
+        body: `<html><body><h1>Error</h1><p>${this.message}</p></body></html>`,
+        status: 400,
+        headers: {
+          "Content-Type": "text/html",
+        },
+      };
+    }
+  }
+
+  describe.concurrent("isResponseBody", () => {
+    it("returns true for error implementing ResponseBody", () => {
+      const error = new CustomApiError({
+        message: "Invalid input",
+        code: "INVALID_INPUT",
+      });
+      expect(isResponseBody(error)).toBe(true);
+    });
+
+    it("returns false for plain Schema.ErrorClass without ResponseBody", () => {
+      class PlainError extends Schema.ErrorClass<PlainError>("PlainError")({
+        message: Schema.String,
+      }) {}
+      const error = new PlainError({ message: "Plain error" });
+      expect(isResponseBody(error)).toBe(false);
+    });
+  });
+
+  describe.concurrent("toResponse output", () => {
+    it("produces correct ResponseBodyOutput", () => {
+      const error = new CustomApiError({
+        message: "Invalid input",
+        code: "INVALID_INPUT",
+      });
+      const output = error.toResponse();
+      expect(output.status).toBe(422);
+      expect(output.headers?.["X-Error-Code"]).toBe("INVALID_INPUT");
+      expect(JSON.parse(output.body as string)).toEqual({
+        error: "CustomApiError",
+        code: "INVALID_INPUT",
+        message: "Invalid input",
+      });
+    });
+
+    it("can return HTML content", () => {
+      const error = new HtmlError({ message: "Bad request" });
+      const output = error.toResponse();
+      expect(output.status).toBe(400);
+      expect(output.headers?.["Content-Type"]).toBe("text/html");
+      expect(output.body).toContain("<h1>Error</h1>");
+      expect(output.body).toContain("Bad request");
+    });
+  });
+
+  const ErrorContract = defineContract({
+    "/validate": {
+      post: {
+        body: Schema.Struct({ value: Schema.String }),
+        success: Schema.Struct({ valid: Schema.Boolean }),
+        failure: CustomApiError,
+      },
+    },
+    "/html-error": {
+      get: {
+        success: Schema.String,
+        failure: HtmlError,
+      },
+    },
+  });
+
+  const ErrorContractImpl = Layer.sync(ErrorContract, () => ({
+    "/validate": {
+      post: (ctx: { body: { value: string } }) =>
+        Effect.gen(function* () {
+          if (ctx.body.value === "invalid") {
+            return yield* new CustomApiError({
+              message: "Value is not allowed",
+              code: "VALUE_NOT_ALLOWED",
+            });
+          }
+          return { valid: true };
+        }),
+    },
+    "/html-error": {
+      get: () =>
+        Effect.gen(function* () {
+          return yield* new HtmlError({ message: "Something went wrong" });
+        }),
+    },
+  }));
+
+  it.effect("uses error's toResponse when error implements ResponseBody", () =>
+    Effect.gen(function* () {
+      const handler = yield* FetchHandler.from(ErrorContract);
+      const request = new Request("http://localhost/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "invalid" }),
+      });
+      const response = yield* Effect.promise(() => handler(request));
+      expect(response.status).toBe(422);
+      expect(response.headers.get("X-Error-Code")).toBe("VALUE_NOT_ALLOWED");
+      const body = yield* Effect.promise(() => response.json());
+      expect(body).toEqual({
+        error: "CustomApiError",
+        code: "VALUE_NOT_ALLOWED",
+        message: "Value is not allowed",
+      });
+    }).pipe(Effect.provide(ErrorContractImpl)),
+  );
+
+  it.effect("respects custom Content-Type from error's toResponse", () =>
+    Effect.gen(function* () {
+      const handler = yield* FetchHandler.from(ErrorContract);
+      const request = new Request("http://localhost/html-error");
+      const response = yield* Effect.promise(() => handler(request));
+      expect(response.status).toBe(400);
+      expect(response.headers.get("Content-Type")).toBe("text/html");
+      const body = yield* Effect.promise(() => response.text());
+      expect(body).toContain("<h1>Error</h1>");
+      expect(body).toContain("Something went wrong");
+    }).pipe(Effect.provide(ErrorContractImpl)),
+  );
+
+  it.effect(
+    "falls back to formatError when error does not implement ResponseBody",
+    () =>
+      Effect.gen(function* () {
+        class RegularError extends Schema.ErrorClass<RegularError>(
+          "RegularError",
+        )({ message: Schema.String }, { httpStatus: 418 }) {}
+
+        const Contract = defineContract({
+          "/teapot": {
+            get: {
+              success: Schema.String,
+              failure: RegularError,
+            },
+          },
+        });
+
+        const Impl = Layer.sync(Contract, () => ({
+          "/teapot": {
+            get: () =>
+              Effect.gen(function* () {
+                return yield* new RegularError({ message: "I'm a teapot" });
+              }),
+          },
+        }));
+
+        const handler = yield* FetchHandler.from(Contract, {
+          formatError: (error) => ({
+            status: 418,
+            body: { custom: true, error: (error as Error).message },
+          }),
+        }).pipe(Effect.provide(Impl));
+
+        const request = new Request("http://localhost/teapot");
+        const response = yield* Effect.promise(() => handler(request));
+        expect(response.status).toBe(418);
+        const body = yield* Effect.promise(() => response.json());
+        expect(body).toEqual({ custom: true, error: "I'm a teapot" });
+      }),
+  );
+
+  it.effect("error with ResponseBody takes precedence over formatError", () =>
+    Effect.gen(function* () {
+      const customFormatError = () => ({
+        status: 500,
+        body: { shouldNotSeeThis: true },
+      });
+
+      const handler = yield* FetchHandler.from(ErrorContract, {
+        formatError: customFormatError,
+      });
+      const request = new Request("http://localhost/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "invalid" }),
+      });
+      const response = yield* Effect.promise(() => handler(request));
+      expect(response.status).toBe(422);
+      const body = yield* Effect.promise(() => response.json());
+      expect((body as Record<string, unknown>).error).toBe("CustomApiError");
+      expect(
+        (body as Record<string, unknown>).shouldNotSeeThis,
+      ).toBeUndefined();
+    }).pipe(Effect.provide(ErrorContractImpl)),
+  );
+});
