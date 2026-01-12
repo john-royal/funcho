@@ -2,8 +2,21 @@
   "name": "funcho",
   "version": "0.0.1",
   "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": "./dist/index.mjs",
+      "./package.json": "./package.json"
+    }
+  },
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsdown",
     "format": "biome format --write .",
     "lint": "biome check .",
     "prepare": "effect-language-service patch",
@@ -20,6 +33,7 @@
     "@effect/language-service": "^0.64.1",
     "@effect/vitest": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/vitest@4d0f6c2",
     "@types/bun": "latest",
+    "tsdown": "^0.20.0-beta.1",
     "typescript": "^5.9.3",
     "vitest": "^3"
   }
