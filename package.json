@@ -1,0 +1,26 @@
+{
+  "name": "funcho",
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "format": "biome format --write .",
+    "lint": "biome check .",
+    "prepare": "effect-language-service patch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "effect": "https://pkg.pr.new/Effect-TS/effect-smol/effect@4d0f6c2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.11",
+    "@effect/language-service": "^0.64.1",
+    "@effect/vitest": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/vitest@4d0f6c2",
+    "@types/bun": "latest",
+    "typescript": "^5.9.3",
+    "vitest": "^3"
+  }
+}
