@@ -1,6 +1,7 @@
 {
   "name": "funcho",
   "version": "0.0.1",
+  "description": "Contract-first HTTP router for Effect 4",
   "type": "module",
   "exports": {
     ".": {
@@ -13,13 +14,37 @@
     "exports": {
       ".": "./dist/index.mjs",
       "./package.json": "./package.json"
-    }
+    },
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": [
+    "effect",
+    "http",
+    "router",
+    "api",
+    "openapi",
+    "schema",
+    "typescript"
+  ],
+  "author": "johnroyal",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/john-royal/funcho.git"
+  },
+  "homepage": "https://github.com/john-royal/funcho#readme",
+  "bugs": {
+    "url": "https://github.com/john-royal/funcho/issues"
   },
   "scripts": {
     "build": "tsdown",
     "format": "biome format --write .",
     "lint": "biome check .",
-    "prepare": "effect-language-service patch",
+    "prepublishOnly": "bun run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
