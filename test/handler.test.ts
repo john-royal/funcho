@@ -189,6 +189,103 @@ describe.concurrent("FetchHandler", () => {
       expect(body.type).toBe("NotFoundError");
     }).pipe(Effect.provide(TestContractImpl)),
   );
+
+  it.effect("supports custom statusText in error formatter", () =>
+    Effect.gen(function* () {
+      const handler = yield* FetchHandler.from(TestContract, {
+        formatError: () => ({
+          status: 503,
+          statusText: "Service Temporarily Unavailable",
+          body: { error: "Service unavailable" },
+        }),
+      });
+      const request = new Request("http://localhost/unknown");
+      const response = yield* Effect.promise(() => handler(request));
+      expect(response.status).toBe(503);
+      expect(response.statusText).toBe("Service Temporarily Unavailable");
+    }).pipe(Effect.provide(TestContractImpl)),
+  );
+
+  it.effect("supports custom headers in error formatter", () =>
+    Effect.gen(function* () {
+      const handler = yield* FetchHandler.from(TestContract, {
+        formatError: () => ({
+          status: 503,
+          headers: { "Retry-After": "300", "X-Custom-Header": "custom-value" },
+          body: { error: "Service unavailable" },
+        }),
+      });
+      const request = new Request("http://localhost/unknown");
+      const response = yield* Effect.promise(() => handler(request));
+      expect(response.status).toBe(503);
+      expect(response.headers.get("Retry-After")).toBe("300");
+      expect(response.headers.get("X-Custom-Header")).toBe("custom-value");
+      // Default Content-Type should still be set
+      expect(response.headers.get("Content-Type")).toBe("application/json");
+    }).pipe(Effect.provide(TestContractImpl)),
+  );
+
+  it.effect("allows overriding Content-Type header in error formatter", () =>
+    Effect.gen(function* () {
+      const handler = yield* FetchHandler.from(TestContract, {
+        formatError: () => ({
+          status: 500,
+          headers: { "Content-Type": "text/plain" },
+          body: "Internal Server Error",
+        }),
+      });
+      const request = new Request("http://localhost/unknown");
+      const response = yield* Effect.promise(() => handler(request));
+      expect(response.status).toBe(500);
+      expect(response.headers.get("Content-Type")).toBe("text/plain");
+      // Body is still JSON-stringified when using ErrorResponse
+      const body = yield* Effect.promise(() => response.text());
+      expect(body).toBe('"Internal Server Error"');
+    }).pipe(Effect.provide(TestContractImpl)),
+  );
+
+  it.effect("supports returning Response directly from error formatter", () =>
+    Effect.gen(function* () {
+      const handler = yield* FetchHandler.from(TestContract, {
+        formatError: () =>
+          new Response("Internal Server Error", {
+            status: 500,
+            statusText: "Internal Server Error",
+            headers: { "Content-Type": "text/plain" },
+          }),
+      });
+      const request = new Request("http://localhost/unknown");
+      const response = yield* Effect.promise(() => handler(request));
+      expect(response.status).toBe(500);
+      expect(response.statusText).toBe("Internal Server Error");
+      expect(response.headers.get("Content-Type")).toBe("text/plain");
+      // Body is passed through as-is when returning Response
+      const body = yield* Effect.promise(() => response.text());
+      expect(body).toBe("Internal Server Error");
+    }).pipe(Effect.provide(TestContractImpl)),
+  );
+
+  it.effect(
+    "merges default Allow header with custom headers for MethodNotAllowed",
+    () =>
+      Effect.gen(function* () {
+        const handler = yield* FetchHandler.from(TestContract, {
+          formatError: () => ({
+            status: 405,
+            headers: { "X-Custom": "value" },
+            body: { error: "Method not allowed" },
+          }),
+        });
+        const request = new Request("http://localhost/users", {
+          method: "DELETE",
+        });
+        const response = yield* Effect.promise(() => handler(request));
+        expect(response.status).toBe(405);
+        // Both Allow (default) and X-Custom (user) headers should be present
+        expect(response.headers.get("Allow")).toBe("get, post");
+        expect(response.headers.get("X-Custom")).toBe("value");
+      }).pipe(Effect.provide(TestContractImpl)),
+  );
 });
 
 describe.concurrent("StreamBody", () => {

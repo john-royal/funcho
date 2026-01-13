@@ -29,12 +29,54 @@ import {
 
 export interface ErrorResponse {
   readonly status: number;
+  readonly statusText?: string;
+  readonly headers?: Record<string, string> | Headers | [string, string][];
   readonly body: unknown;
 }
 
 export interface FetchHandlerOptions {
-  readonly formatError?: (error: unknown, request: Request) => ErrorResponse;
+  /**
+   * Custom error formatter. Can return either:
+   * - `ErrorResponse`: Will be JSON-stringified with merged headers (Content-Type: application/json by default)
+   * - `Response`: Will be used as-is for full control over the response
+   */
+  readonly formatError?: (
+    error: unknown,
+    request: Request,
+  ) => ErrorResponse | Response;
 }
+
+/**
+ * Builds a Response from an ErrorResponse or returns the Response as-is.
+ * Merges headers: defaults → defaultHeaders → errorResponse.headers
+ */
+const buildErrorResponse = (
+  errorResponse: ErrorResponse | Response,
+  defaultHeaders?: Record<string, string>,
+): Response => {
+  if (errorResponse instanceof Response) {
+    return errorResponse;
+  }
+
+  const headers = new Headers({ "Content-Type": "application/json" });
+  if (defaultHeaders) {
+    for (const [key, value] of Object.entries(defaultHeaders)) {
+      headers.set(key, value);
+    }
+  }
+  if (errorResponse.headers) {
+    const userHeaders = new Headers(errorResponse.headers);
+    userHeaders.forEach((value, key) => {
+      headers.set(key, value);
+    });
+  }
+
+  return new Response(JSON.stringify(errorResponse.body), {
+    status: errorResponse.status,
+    statusText: errorResponse.statusText,
+    headers,
+  });
+};
 
 const defaultFormatError = (error: unknown): ErrorResponse => {
   if (error instanceof ValidationError) {
@@ -267,23 +309,14 @@ const handleRequest = <C extends Contract>(
       });
       const errorResponse = formatError(error, request);
       return Effect.succeed(
-        new Response(JSON.stringify(errorResponse.body), {
-          status: errorResponse.status,
-          headers: {
-            "Content-Type": "application/json",
-            Allow: matchResult.allowedMethods.join(", "),
-          },
+        buildErrorResponse(errorResponse, {
+          Allow: matchResult.allowedMethods.join(", "),
         }),
       );
     }
     const error = new NotFoundError({ message: "Route not found" });
     const errorResponse = formatError(error, request);
-    return Effect.succeed(
-      new Response(JSON.stringify(errorResponse.body), {
-        status: errorResponse.status,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
+    return Effect.succeed(buildErrorResponse(errorResponse));
   }
 
   const match: RouteMatch = matchResult;
@@ -295,12 +328,7 @@ const handleRequest = <C extends Contract>(
   if (!methodImpl) {
     const error = new NotFoundError({ message: "Handler not found" });
     const errorResponse = formatError(error, request);
-    return Effect.succeed(
-      new Response(JSON.stringify(errorResponse.body), {
-        status: errorResponse.status,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
+    return Effect.succeed(buildErrorResponse(errorResponse));
   }
 
   const streamBody = isStreamBody(match.definition.body ?? Schema.Undefined)
@@ -355,12 +383,7 @@ const handleRequest = <C extends Contract>(
 
       // Fall back to formatError for untyped errors
       const errorResponse = formatError(error, request);
-      return Effect.succeed(
-        new Response(JSON.stringify(errorResponse.body), {
-          status: errorResponse.status,
-          headers: { "Content-Type": "application/json" },
-        }),
-      );
+      return Effect.succeed(buildErrorResponse(errorResponse));
     }),
   );
 };
