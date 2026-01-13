@@ -632,3 +632,59 @@ describe.concurrent("decodePath option", () => {
     }),
   );
 });
+
+describe.concurrent("query parameters", () => {
+  it.effect("decodes query parameters by default", () =>
+    Effect.gen(function* () {
+      const DecodeContract = defineContract({
+        "/items": {
+          get: {
+            query: { id: Schema.String },
+            success: response(Schema.Struct({ id: Schema.String })),
+          },
+        },
+      });
+      const DecodeImpl = Layer.sync(DecodeContract, () => ({
+        "/items": {
+          get: (ctx) => Effect.succeed(ctx.respond({ id: ctx.query.id })),
+        },
+      }));
+      const handler = yield* FetchHandler.from(DecodeContract).pipe(
+        Effect.provide(DecodeImpl),
+      );
+      const req = new Request("http://localhost/items?id=123");
+      const res = yield* Effect.promise(() => handler(req));
+      expect(res.status).toBe(200);
+      const body = yield* Effect.promise(() => res.json());
+      expect(body).toEqual({ id: "123" });
+    }),
+  );
+
+  it.effect("honors withDecodingDefault", () =>
+    Effect.gen(function* () {
+      const DecodeContract = defineContract({
+        "/items": {
+          get: {
+            query: {
+              id: Schema.String.pipe(Schema.withDecodingDefault(() => "456")),
+            },
+            success: response(Schema.Struct({ id: Schema.String })),
+          },
+        },
+      });
+      const DecodeImpl = Layer.sync(DecodeContract, () => ({
+        "/items": {
+          get: (ctx) => Effect.succeed(ctx.respond({ id: ctx.query.id })),
+        },
+      }));
+      const handler = yield* FetchHandler.from(DecodeContract).pipe(
+        Effect.provide(DecodeImpl),
+      );
+      const req = new Request("http://localhost/items");
+      const res = yield* Effect.promise(() => handler(req));
+      expect(res.status).toBe(200);
+      const body = yield* Effect.promise(() => res.json());
+      expect(body).toEqual({ id: "456" });
+    }),
+  );
+});

@@ -137,13 +137,12 @@ const parseQuery = (
     const result: Record<string, unknown> = {};
     for (const [key, schema] of Object.entries(definition.query)) {
       const raw = url.searchParams.get(key);
-      if (raw !== null) {
-        result[key] = yield* decodeSchema(
-          schema,
-          raw,
-          `Invalid query parameter: ${key}`,
-        );
-      }
+      result[key] = yield* decodeSchema(
+        schema,
+        // withDecodingDefault expects <T | undefined>, not <T | null>
+        raw ?? undefined,
+        `Invalid query parameter: ${key}`,
+      );
     }
     return result;
   });
