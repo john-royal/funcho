@@ -384,7 +384,7 @@ describe.concurrent("StreamBody", () => {
     }).pipe(Effect.provide(StreamContractImpl)),
   );
 
-  it.effect("cancels stream body on handler error", () =>
+  it.effect("consumes stream body on handler error", () =>
     Effect.gen(function* () {
       class HandlerError extends Schema.ErrorClass<HandlerError>(
         "HandlerError",
@@ -400,7 +400,7 @@ describe.concurrent("StreamBody", () => {
         },
       });
 
-      let streamCanceled = false;
+      let streamConsumed = false;
       const ErrorContractImpl = Layer.sync(ErrorContract, () => ({
         "/upload-error": {
           post: () => Effect.fail(new HandlerError({ message: "Test error" })),
@@ -411,25 +411,32 @@ describe.concurrent("StreamBody", () => {
         Effect.provide(ErrorContractImpl),
       );
 
-      // Create a custom stream that tracks cancellation
+      // Create a custom stream that tracks consumption
       const stream = new ReadableStream({
         start(controller) {
           controller.enqueue(new TextEncoder().encode("test data"));
-        },
-        cancel() {
-          streamCanceled = true;
+          controller.close();
         },
       });
 
       const req = new Request("http://localhost/upload-error", {
         method: "POST",
-        body: stream,
+        body: stream.pipeThrough(
+          new TransformStream({
+            transform(chunk, controller) {
+              controller.enqueue(chunk);
+            },
+            flush() {
+              streamConsumed = true;
+            },
+          }),
+        ),
         duplex: "half",
       } as RequestInit);
 
       const res = yield* Effect.promise(() => errorHandler(req));
       expect(res.status).toBe(500);
-      expect(streamCanceled).toBe(true);
+      expect(streamConsumed).toBe(true);
     }),
   );
 
