@@ -2,7 +2,12 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { defineContract, FetchHandler, response } from "../src/index.js";
+import {
+  defineContract,
+  FetchHandler,
+  response,
+  StreamBody,
+} from "../src/index.js";
 
 const User = Schema.Struct({
   id: Schema.Number,
@@ -183,5 +188,102 @@ describe.concurrent("FetchHandler", () => {
       expect(body.customError).toBe(true);
       expect(body.type).toBe("NotFoundError");
     }).pipe(Effect.provide(TestContractImpl)),
+  );
+});
+
+describe.concurrent("StreamBody", () => {
+  const StreamContract = defineContract({
+    "/upload": {
+      post: {
+        body: StreamBody,
+        success: response(Schema.Struct({ bytesReceived: Schema.Number })),
+      },
+    },
+    "/upload-optional": {
+      post: {
+        body: Schema.Union([StreamBody, Schema.Null]),
+        success: response(
+          Schema.Struct({
+            bytesReceived: Schema.Number,
+            hadBody: Schema.Boolean,
+          }),
+        ),
+      },
+    },
+  });
+
+  const StreamContractImpl = Layer.sync(StreamContract, () => ({
+    "/upload": {
+      post: (ctx) =>
+        Effect.gen(function* () {
+          const reader = (ctx.body as ReadableStream<Uint8Array>).getReader();
+          let bytesReceived = 0;
+          while (true) {
+            const result = yield* Effect.promise(() => reader.read());
+            if (result.done) break;
+            bytesReceived += result.value.byteLength;
+          }
+          return ctx.respond({ bytesReceived });
+        }),
+    },
+    "/upload-optional": {
+      post: (ctx) =>
+        Effect.gen(function* () {
+          if (ctx.body === null) {
+            return ctx.respond({ bytesReceived: 0, hadBody: false });
+          }
+          const reader = (ctx.body as ReadableStream<Uint8Array>).getReader();
+          let bytesReceived = 0;
+          while (true) {
+            const result = yield* Effect.promise(() => reader.read());
+            if (result.done) break;
+            bytesReceived += result.value.byteLength;
+          }
+          return ctx.respond({ bytesReceived, hadBody: true });
+        }),
+    },
+  }));
+
+  it.effect("handles StreamBody as request body", () =>
+    Effect.gen(function* () {
+      const handler = yield* FetchHandler.from(StreamContract);
+      const data = new TextEncoder().encode("Hello, World!");
+      const request = new Request("http://localhost/upload", {
+        method: "POST",
+        body: data,
+      });
+      const response = yield* Effect.promise(() => handler(request));
+      expect(response.status).toBe(200);
+      const body = yield* Effect.promise(() => response.json());
+      expect(body).toEqual({ bytesReceived: 13 });
+    }).pipe(Effect.provide(StreamContractImpl)),
+  );
+
+  it.effect("handles StreamBody union with null - with body", () =>
+    Effect.gen(function* () {
+      const handler = yield* FetchHandler.from(StreamContract);
+      const data = new TextEncoder().encode("Test data");
+      const request = new Request("http://localhost/upload-optional", {
+        method: "POST",
+        body: data,
+      });
+      const response = yield* Effect.promise(() => handler(request));
+      expect(response.status).toBe(200);
+      const body = yield* Effect.promise(() => response.json());
+      expect(body).toEqual({ bytesReceived: 9, hadBody: true });
+    }).pipe(Effect.provide(StreamContractImpl)),
+  );
+
+  it.effect("handles StreamBody union with null - without body", () =>
+    Effect.gen(function* () {
+      const handler = yield* FetchHandler.from(StreamContract);
+      const request = new Request("http://localhost/upload-optional", {
+        method: "POST",
+      });
+      const response = yield* Effect.promise(() => handler(request));
+      expect(response.status).toBe(200);
+      const body = yield* Effect.promise(() => response.json());
+      expect(body).toEqual({ bytesReceived: 0, hadBody: false });
+    }).pipe(Effect.provide(StreamContractImpl)),
   );
 });

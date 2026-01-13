@@ -34,8 +34,9 @@ export {
 
 export {
   type AnyResponseSchema,
-  response,
+  isStreamBody,
   type ResponseSchema,
   type ResponseUnion,
+  response,
   StreamBody,
 } from "./schema.js";

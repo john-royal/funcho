@@ -24,6 +24,7 @@ import {
   type AnyResponseSchema,
   getDefaultStatus,
   getResponseSchemas,
+  isStreamBody,
 } from "./schema.js";
 
 export interface ErrorResponse {
@@ -151,8 +152,8 @@ const parseBody = (
 ): Effect.Effect<unknown, ValidationError> =>
   Effect.gen(function* () {
     if (!definition.body) return undefined;
-    if (definition.body === Schema.instanceOf(ReadableStream)) {
-      return request.body;
+    if (isStreamBody(definition.body)) {
+      return request.body ?? null;
     }
     const text = yield* Effect.promise(() => request.text());
     if (!text) return undefined;

@@ -7,6 +7,7 @@ import {
   getStatuses,
   isResponseSchema,
   isResponseUnion,
+  isStreamBody,
   response,
   StreamBody,
 } from "../src/schema.js";
@@ -158,5 +159,32 @@ describe.concurrent("StreamBody", () => {
     const stream = new ReadableStream();
     const decoded = Schema.decodeUnknownSync(StreamBody)(stream);
     expect(decoded).toBe(stream);
+  });
+});
+
+describe.concurrent("isStreamBody()", () => {
+  it("returns true for StreamBody", () => {
+    expect(isStreamBody(StreamBody)).toBe(true);
+  });
+
+  it("returns true for union containing StreamBody", () => {
+    const union = Schema.Union([StreamBody, Schema.Null]);
+    expect(isStreamBody(union)).toBe(true);
+  });
+
+  it("returns false for other schemas", () => {
+    expect(isStreamBody(Schema.String)).toBe(false);
+    expect(isStreamBody(Schema.Null)).toBe(false);
+    expect(isStreamBody(Schema.Struct({ data: Schema.String }))).toBe(false);
+  });
+
+  it("returns false for union without StreamBody", () => {
+    const union = Schema.Union([Schema.String, Schema.Null]);
+    expect(isStreamBody(union)).toBe(false);
+  });
+
+  it("returns false for a different instanceOf(ReadableStream)", () => {
+    const differentStream = Schema.instanceOf(ReadableStream);
+    expect(isStreamBody(differentStream)).toBe(false);
   });
 });

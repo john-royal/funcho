@@ -137,3 +137,12 @@ export const getDefaultStatus = (schema: AnyResponseSchema): number => {
 };
 
 export const StreamBody = Schema.instanceOf(ReadableStream);
+
+export const isStreamBody = (schema: Schema.Top): boolean => {
+  if (schema === StreamBody) return true;
+  if (schema.ast._tag === "Union") {
+    const union = schema as Schema.Union<ReadonlyArray<Schema.Top>>;
+    return union.members.some((member) => member === StreamBody);
+  }
+  return false;
+};
