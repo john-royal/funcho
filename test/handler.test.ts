@@ -286,4 +286,84 @@ describe.concurrent("StreamBody", () => {
       expect(body).toEqual({ bytesReceived: 0, hadBody: false });
     }).pipe(Effect.provide(StreamContractImpl)),
   );
+
+  it.effect("cancels stream body on handler error", () =>
+    Effect.gen(function* () {
+      class HandlerError extends Schema.ErrorClass<HandlerError>(
+        "HandlerError",
+      )({ message: Schema.String }) {}
+
+      const ErrorContract = defineContract({
+        "/upload-error": {
+          post: {
+            body: StreamBody,
+            success: response(Schema.Struct({ ok: Schema.Boolean })),
+            failure: response(HandlerError, { status: 500 }),
+          },
+        },
+      });
+
+      let streamCanceled = false;
+      const ErrorContractImpl = Layer.sync(ErrorContract, () => ({
+        "/upload-error": {
+          post: () => Effect.fail(new HandlerError({ message: "Test error" })),
+        },
+      }));
+
+      const errorHandler = yield* FetchHandler.from(ErrorContract).pipe(
+        Effect.provide(ErrorContractImpl),
+      );
+
+      // Create a custom stream that tracks cancellation
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("test data"));
+        },
+        cancel() {
+          streamCanceled = true;
+        },
+      });
+
+      const req = new Request("http://localhost/upload-error", {
+        method: "POST",
+        body: stream,
+        duplex: "half",
+      } as RequestInit);
+
+      const res = yield* Effect.promise(() => errorHandler(req));
+      expect(res.status).toBe(500);
+      expect(streamCanceled).toBe(true);
+    }),
+  );
+
+  it.effect("does not cancel stream body on success", () =>
+    Effect.gen(function* () {
+      let streamCanceled = false;
+
+      const successHandler = yield* FetchHandler.from(StreamContract).pipe(
+        Effect.provide(StreamContractImpl),
+      );
+
+      // Create a custom stream that tracks cancellation
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("test data"));
+          controller.close();
+        },
+        cancel() {
+          streamCanceled = true;
+        },
+      });
+
+      const req = new Request("http://localhost/upload", {
+        method: "POST",
+        body: stream,
+        duplex: "half",
+      } as RequestInit);
+
+      const res = yield* Effect.promise(() => successHandler(req));
+      expect(res.status).toBe(200);
+      expect(streamCanceled).toBe(false);
+    }),
+  );
 });

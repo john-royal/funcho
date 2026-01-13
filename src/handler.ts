@@ -290,6 +290,10 @@ const handleRequest = <C extends Contract>(
     );
   }
 
+  const streamBody = isStreamBody(match.definition.body ?? Schema.Undefined)
+    ? request.body
+    : null;
+
   return Effect.gen(function* () {
     const [path, query, headers, body] = yield* Effect.all(
       [
@@ -320,6 +324,12 @@ const handleRequest = <C extends Contract>(
       headers: { "Content-Type": "application/json" },
     });
   }).pipe(
+    Effect.onExit((exit) => {
+      if (exit._tag === "Failure" && streamBody && !streamBody.locked) {
+        return Effect.promise(() => streamBody.cancel());
+      }
+      return Effect.void;
+    }),
     Effect.catch((error: unknown) => {
       // Check if error matches a contract failure type
       const contractFailure = matchContractFailure(
