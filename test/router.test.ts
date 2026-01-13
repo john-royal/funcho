@@ -109,5 +109,77 @@ describe.concurrent("router", () => {
         expect(result.allowedMethods).toEqual(["get", "post"]);
       }
     });
+
+    it("preserves URL-encoded characters in params (decoding handled by handler)", () => {
+      const result = matchRoute(routes, "/users/hello%20world", "GET");
+      expect(isRouteMatch(result)).toBe(true);
+      if (isRouteMatch(result)) {
+        // path-to-regexp with decode: false preserves the encoded value
+        expect(result.params).toEqual({ id: "hello%20world" });
+      }
+    });
+
+    it("matches paths with unicode characters", () => {
+      const result = matchRoute(routes, "/users/%E2%9C%93", "GET");
+      expect(isRouteMatch(result)).toBe(true);
+      if (isRouteMatch(result)) {
+        expect(result.params).toEqual({ id: "%E2%9C%93" });
+      }
+    });
+  });
+
+  describe.concurrent("special characters in static paths", () => {
+    const specialContract = {
+      "/api/v1.0/users": {
+        get: { success: response(Schema.String) },
+      },
+      "/files/*.txt": {
+        get: { success: response(Schema.String) },
+      },
+      "/search+query": {
+        get: { success: response(Schema.String) },
+      },
+      "/path(group)": {
+        get: { success: response(Schema.String) },
+      },
+    };
+
+    const specialRoutes = compileContract(specialContract);
+
+    it("escapes dot in static path segments", () => {
+      const exactMatch = matchRoute(specialRoutes, "/api/v1.0/users", "GET");
+      expect(isRouteMatch(exactMatch)).toBe(true);
+
+      // Without proper escaping, '.' would match any character
+      const wrongMatch = matchRoute(specialRoutes, "/api/v1X0/users", "GET");
+      expect(isRouteMatch(wrongMatch)).toBe(false);
+    });
+
+    it("escapes asterisk in static path segments", () => {
+      const exactMatch = matchRoute(specialRoutes, "/files/*.txt", "GET");
+      expect(isRouteMatch(exactMatch)).toBe(true);
+
+      // Without proper escaping, '*' could cause issues
+      const wrongMatch = matchRoute(specialRoutes, "/files/foo.txt", "GET");
+      expect(isRouteMatch(wrongMatch)).toBe(false);
+    });
+
+    it("escapes plus sign in static path segments", () => {
+      const exactMatch = matchRoute(specialRoutes, "/search+query", "GET");
+      expect(isRouteMatch(exactMatch)).toBe(true);
+
+      // Without proper escaping, '+' could cause issues
+      const wrongMatch = matchRoute(specialRoutes, "/searchXquery", "GET");
+      expect(isRouteMatch(wrongMatch)).toBe(false);
+    });
+
+    it("escapes parentheses in static path segments", () => {
+      const exactMatch = matchRoute(specialRoutes, "/path(group)", "GET");
+      expect(isRouteMatch(exactMatch)).toBe(true);
+
+      // Without proper escaping, '()' could be interpreted as regex groups
+      const wrongMatch = matchRoute(specialRoutes, "/pathgroup", "GET");
+      expect(isRouteMatch(wrongMatch)).toBe(false);
+    });
   });
 });

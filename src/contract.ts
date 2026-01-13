@@ -24,6 +24,21 @@ export interface RouteDefinition {
   readonly body?: Schema.Top;
   readonly success: AnyResponseSchema;
   readonly failure?: AnyResponseSchema;
+  /**
+   * Whether to URL-decode path parameters using `decodeURIComponent`.
+   *
+   * @default true
+   *
+   * When `true` (default):
+   * - Path parameters are automatically decoded (e.g., `hello%20world` → `hello world`)
+   * - Malformed percent-encoding (e.g., `%ZZ`) returns a 400 ValidationError
+   *
+   * When `false`:
+   * - Path parameters are passed through as-is without decoding
+   * - Useful when you need to handle encoding manually based on other request data
+   *   (e.g., Cloudflare KV API where a query param indicates if the key is URL-encoded)
+   */
+  readonly decodePath?: boolean;
 }
 
 type SameShape<Out, In extends Out> = In & {

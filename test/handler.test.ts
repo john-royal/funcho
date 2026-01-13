@@ -367,3 +367,164 @@ describe.concurrent("StreamBody", () => {
     }),
   );
 });
+
+describe.concurrent("decodePath option", () => {
+  it.effect("decodes URL-encoded path parameters by default", () =>
+    Effect.gen(function* () {
+      const DecodeContract = defineContract({
+        "/items/{id}": {
+          get: {
+            path: { id: Schema.String },
+            success: response(Schema.Struct({ id: Schema.String })),
+          },
+        },
+      });
+
+      const DecodeImpl = Layer.sync(DecodeContract, () => ({
+        "/items/{id}": {
+          get: (ctx) => Effect.succeed(ctx.respond({ id: ctx.path.id })),
+        },
+      }));
+
+      const handler = yield* FetchHandler.from(DecodeContract).pipe(
+        Effect.provide(DecodeImpl),
+      );
+
+      // %20 should be decoded to space
+      const req = new Request("http://localhost/items/hello%20world");
+      const res = yield* Effect.promise(() => handler(req));
+      expect(res.status).toBe(200);
+      const body = yield* Effect.promise(() => res.json());
+      expect(body).toEqual({ id: "hello world" });
+    }),
+  );
+
+  it.effect("decodes unicode characters in path parameters", () =>
+    Effect.gen(function* () {
+      const UnicodeContract = defineContract({
+        "/items/{id}": {
+          get: {
+            path: { id: Schema.String },
+            success: response(Schema.Struct({ id: Schema.String })),
+          },
+        },
+      });
+
+      const UnicodeImpl = Layer.sync(UnicodeContract, () => ({
+        "/items/{id}": {
+          get: (ctx) => Effect.succeed(ctx.respond({ id: ctx.path.id })),
+        },
+      }));
+
+      const handler = yield* FetchHandler.from(UnicodeContract).pipe(
+        Effect.provide(UnicodeImpl),
+      );
+
+      // %E2%9C%93 is the UTF-8 encoding of ✓
+      const req = new Request("http://localhost/items/%E2%9C%93");
+      const res = yield* Effect.promise(() => handler(req));
+      expect(res.status).toBe(200);
+      const body = yield* Effect.promise(() => res.json());
+      expect(body).toEqual({ id: "✓" });
+    }),
+  );
+
+  it.effect("does not decode when decodePath is false", () =>
+    Effect.gen(function* () {
+      const RawContract = defineContract({
+        "/items/{key}": {
+          get: {
+            path: { key: Schema.String },
+            query: { urlencoded: Schema.optional(Schema.String) },
+            decodePath: false,
+            success: response(Schema.Struct({ key: Schema.String })),
+          },
+        },
+      });
+
+      const RawImpl = Layer.sync(RawContract, () => ({
+        "/items/{key}": {
+          get: (ctx) => Effect.succeed(ctx.respond({ key: ctx.path.key })),
+        },
+      }));
+
+      const handler = yield* FetchHandler.from(RawContract).pipe(
+        Effect.provide(RawImpl),
+      );
+
+      // With decodePath: false, %20 should remain as-is
+      const req = new Request("http://localhost/items/hello%20world");
+      const res = yield* Effect.promise(() => handler(req));
+      expect(res.status).toBe(200);
+      const body = yield* Effect.promise(() => res.json());
+      expect(body).toEqual({ key: "hello%20world" });
+    }),
+  );
+
+  it.effect(
+    "returns 400 for malformed URL encoding when decodePath is true",
+    () =>
+      Effect.gen(function* () {
+        const MalformedContract = defineContract({
+          "/items/{id}": {
+            get: {
+              path: { id: Schema.String },
+              success: response(Schema.Struct({ id: Schema.String })),
+            },
+          },
+        });
+
+        const MalformedImpl = Layer.sync(MalformedContract, () => ({
+          "/items/{id}": {
+            get: (ctx) => Effect.succeed(ctx.respond({ id: ctx.path.id })),
+          },
+        }));
+
+        const handler = yield* FetchHandler.from(MalformedContract).pipe(
+          Effect.provide(MalformedImpl),
+        );
+
+        // %ZZ is invalid percent-encoding
+        const req = new Request("http://localhost/items/%ZZ");
+        const res = yield* Effect.promise(() => handler(req));
+        expect(res.status).toBe(400);
+        const body = (yield* Effect.promise(() => res.json())) as {
+          error: string;
+          message: string;
+        };
+        expect(body.error).toBe("ValidationError");
+        expect(body.message).toContain("Invalid URL encoding");
+      }),
+  );
+
+  it.effect("allows malformed URL encoding when decodePath is false", () =>
+    Effect.gen(function* () {
+      const AllowMalformedContract = defineContract({
+        "/items/{key}": {
+          get: {
+            path: { key: Schema.String },
+            decodePath: false,
+            success: response(Schema.Struct({ key: Schema.String })),
+          },
+        },
+      });
+
+      const AllowMalformedImpl = Layer.sync(AllowMalformedContract, () => ({
+        "/items/{key}": {
+          get: (ctx) => Effect.succeed(ctx.respond({ key: ctx.path.key })),
+        },
+      }));
+
+      const handler = yield* FetchHandler.from(AllowMalformedContract).pipe(
+        Effect.provide(AllowMalformedImpl),
+      );
+
+      // %ZZ is invalid percent-encoding but should pass through when decodePath: false
+      const req = new Request("http://localhost/items/%ZZ");
+      const res = yield* Effect.promise(() => handler(req));
+      expect(res.status).toBe(200);
+      const body = yield* Effect.promise(() => res.json());
+      expect(body).toEqual({ key: "%ZZ" });
+    }),
+  );
+});

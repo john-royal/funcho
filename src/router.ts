@@ -1,8 +1,9 @@
+import { type MatchFunction, match } from "path-to-regexp";
 import type { Contract, HttpMethod, RouteDefinition } from "./contract.js";
 
 export interface CompiledRoute {
   readonly pattern: string;
-  readonly regex: RegExp;
+  readonly matchFn: MatchFunction<Record<string, string>>;
   readonly paramNames: ReadonlyArray<string>;
   readonly methods: ReadonlyArray<HttpMethod>;
   readonly definitions: Partial<Record<HttpMethod, RouteDefinition>>;
@@ -15,18 +16,52 @@ export interface RouteMatch {
   readonly params: Record<string, string>;
 }
 
+/**
+ * Escapes special path-to-regexp characters in static path segments.
+ * Characters that have special meaning in path-to-regexp need to be escaped with backslash.
+ */
+const escapeSpecialChars = (segment: string): string =>
+  segment.replace(/[+*?()[\]\\]/g, "\\$&");
+
+/**
+ * Transforms `{param}` syntax to `:param` syntax for path-to-regexp compatibility,
+ * while escaping special characters in static segments.
+ */
+const transformPattern = (pattern: string): string => {
+  // Split by {param} patterns, escape static parts, then rejoin with :param
+  const parts = pattern.split(/(\{[^}]+\})/g);
+  return parts
+    .map((part) => {
+      if (part.startsWith("{") && part.endsWith("}")) {
+        // Convert {param} to :param
+        return `:${part.slice(1, -1)}`;
+      }
+      // Escape special chars in static segments
+      return escapeSpecialChars(part);
+    })
+    .join("");
+};
+
+/**
+ * Extracts parameter names from the `{param}` syntax.
+ */
+const extractParamNames = (pattern: string): string[] => {
+  const names: string[] = [];
+  pattern.replace(/\{([^}]+)\}/g, (_, name) => {
+    names.push(name);
+    return "";
+  });
+  return names;
+};
+
 const compilePattern = (
   pattern: string,
-): { regex: RegExp; paramNames: string[] } => {
-  const paramNames: string[] = [];
-  const regexPattern = pattern.replace(/\{([^}]+)\}/g, (_, name) => {
-    paramNames.push(name);
-    return `(?<${name}>[^/]+)`;
-  });
-  return {
-    regex: new RegExp(`^${regexPattern}$`),
-    paramNames,
-  };
+): { matchFn: MatchFunction<Record<string, string>>; paramNames: string[] } => {
+  const paramNames = extractParamNames(pattern);
+  const transformed = transformPattern(pattern);
+  // decode: false - we handle decoding in the handler based on route's decodePath option
+  const matchFn = match<Record<string, string>>(transformed, { decode: false });
+  return { matchFn, paramNames };
 };
 
 export const compileContract = (
@@ -37,7 +72,7 @@ export const compileContract = (
     const compiled = compilePattern(pattern);
     routes.push({
       pattern,
-      regex: compiled.regex,
+      matchFn: compiled.matchFn,
       paramNames: compiled.paramNames,
       methods: Object.keys(methods) as HttpMethod[],
       definitions: methods,
@@ -58,15 +93,15 @@ export const matchRoute = (
     } => {
   const normalizedMethod = method.toLowerCase() as HttpMethod;
   for (const route of routes) {
-    const match = route.regex.exec(pathname);
-    if (match) {
+    const result = route.matchFn(pathname);
+    if (result) {
       const definition = route.definitions[normalizedMethod];
       if (definition) {
         return {
           route,
           method: normalizedMethod,
           definition,
-          params: match.groups ?? {},
+          params: result.params,
         };
       }
       return { matched: false, allowedMethods: route.methods };

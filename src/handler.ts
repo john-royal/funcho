@@ -132,10 +132,23 @@ const parsePath = (
 ): Effect.Effect<Record<string, unknown>, ValidationError> =>
   Effect.gen(function* () {
     if (!definition.path) return params;
+    const shouldDecode = definition.decodePath !== false;
     const result: Record<string, unknown> = {};
     for (const [key, schema] of Object.entries(definition.path)) {
-      const raw = params[key];
+      let raw = params[key];
       if (raw !== undefined) {
+        if (shouldDecode) {
+          try {
+            raw = decodeURIComponent(raw);
+          } catch {
+            return yield* Effect.fail(
+              new ValidationError({
+                message: `Invalid URL encoding in path parameter: ${key}`,
+                issues: [],
+              }),
+            );
+          }
+        }
         result[key] = yield* decodeSchema(
           schema,
           raw,

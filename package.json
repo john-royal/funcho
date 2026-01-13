@@ -50,7 +50,9 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {},
+  "dependencies": {
+    "path-to-regexp": "^8.3.0"
+  },
   "peerDependencies": {
     "effect": "https://pkg.pr.new/Effect-TS/effect-smol/effect@4d0f6c2"
   },
