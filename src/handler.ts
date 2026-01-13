@@ -365,12 +365,13 @@ const handleRequest = <C extends Contract>(
       headers: { "Content-Type": "application/json" },
     });
   }).pipe(
-    Effect.onExit((exit) => {
-      if (exit._tag === "Failure" && streamBody && !streamBody.locked) {
-        return Effect.promise(() => streamBody.cancel());
-      }
-      return Effect.void;
-    }),
+    Effect.ensuring(
+      Effect.promise(async () => {
+        if (request.body && !request.bodyUsed) {
+          await request.body.pipeTo(new WritableStream());
+        }
+      }),
+    ),
     Effect.catch((error: unknown) => {
       // Check if error matches a contract failure type
       const contractFailure = matchContractFailure(
