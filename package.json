@@ -8,11 +8,56 @@
       "bun": "./src/index.ts",
       "default": "./dist/index.mjs"
     },
+    "./Annotations": {
+      "bun": "./src/Annotations.ts",
+      "default": "./dist/Annotations.mjs"
+    },
+    "./Client": {
+      "bun": "./src/Client.ts",
+      "default": "./dist/Client.mjs"
+    },
+    "./Error": {
+      "bun": "./src/Error.ts",
+      "default": "./dist/Error.mjs"
+    },
+    "./Gate": {
+      "bun": "./src/Gate.ts",
+      "default": "./dist/Gate.mjs"
+    },
+    "./Handler": {
+      "bun": "./src/Handler.ts",
+      "default": "./dist/Handler.mjs"
+    },
+    "./Headers": {
+      "bun": "./src/Headers.ts",
+      "default": "./dist/Headers.mjs"
+    },
+    "./Route": {
+      "bun": "./src/Route.ts",
+      "default": "./dist/Route.mjs"
+    },
+    "./Router": {
+      "bun": "./src/Router.ts",
+      "default": "./dist/Router.mjs"
+    },
+    "./Stream": {
+      "bun": "./src/Stream.ts",
+      "default": "./dist/Stream.mjs"
+    },
     "./package.json": "./package.json"
   },
   "publishConfig": {
     "exports": {
       ".": "./dist/index.mjs",
+      "./Annotations": "./dist/Annotations.mjs",
+      "./Client": "./dist/Client.mjs",
+      "./Error": "./dist/Error.mjs",
+      "./Gate": "./dist/Gate.mjs",
+      "./Handler": "./dist/Handler.mjs",
+      "./Headers": "./dist/Headers.mjs",
+      "./Route": "./dist/Route.mjs",
+      "./Router": "./dist/Router.mjs",
+      "./Stream": "./dist/Stream.mjs",
       "./package.json": "./package.json"
     },
     "access": "public"
