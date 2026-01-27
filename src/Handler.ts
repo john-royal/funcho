@@ -5,7 +5,14 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { getStatusFromError, isRouteError } from "./Error.js";
+import { getContentType } from "./Annotations.js";
+import {
+  errorMatchesSchema,
+  getStatusFromError,
+  getStatusFromSchema,
+  isRouteError,
+  isTransformedSchema,
+} from "./Error.js";
 import type { AnyGatedRoute } from "./Gate.js";
 import { isGatedRoute } from "./Gate.js";
 import * as Headers from "./Headers.js";
@@ -244,45 +251,115 @@ const buildResponse = (
 };
 
 /**
- * Build error response.
+ * Infer content type from encoded value.
+ */
+const inferContentType = (encoded: unknown): string => {
+  if (typeof encoded === "string") {
+    return "text/plain";
+  }
+  if (encoded instanceof Uint8Array) {
+    return "application/octet-stream";
+  }
+  return "application/json";
+};
+
+/**
+ * Serialize encoded value to response body.
+ */
+const serializeBody = (
+  encoded: unknown,
+  contentType: string,
+): string | Uint8Array => {
+  if (contentType === "text/plain" && typeof encoded === "string") {
+    return encoded;
+  }
+  if (
+    contentType === "application/octet-stream" &&
+    encoded instanceof Uint8Array
+  ) {
+    return encoded;
+  }
+  // Default to JSON
+  return JSON.stringify(encoded);
+};
+
+/**
+ * Build error response with optional schema transformation.
+ *
+ * This function:
+ * 1. Finds the matching error schema from the route's errors array
+ * 2. Uses Schema.encodeEffect to transform the error if it's a transformed schema
+ * 3. Detects content type via annotation or type inference
+ * 4. Serializes appropriately (JSON for objects, raw for strings/bytes)
  */
 const buildErrorResponse = (
   error: unknown,
+  errorSchemas: ReadonlyArray<Schema.Top> | undefined,
   responseHeaders: globalThis.Headers,
-): Response => {
-  // Check if error is from a RouteError class
-  if (typeof error === "object" && error !== null && "_tag" in error) {
-    // Try to find the status from the error's constructor
-    const errorConstructor = (error as object).constructor;
-    if (isRouteError(errorConstructor)) {
-      const status = getStatusFromError(errorConstructor);
-      responseHeaders.set("content-type", "application/json");
-      return new Response(JSON.stringify({ error }), {
-        status,
-        headers: responseHeaders,
-      });
+): Effect.Effect<Response> =>
+  Effect.gen(function* () {
+    // Try to find a matching error schema
+    let matchingSchema: Schema.Top | undefined;
+    if (errorSchemas) {
+      for (const schema of errorSchemas) {
+        if (errorMatchesSchema(error, schema)) {
+          matchingSchema = schema;
+          break;
+        }
+      }
     }
 
-    // Default tagged error
-    responseHeaders.set("content-type", "application/json");
-    return new Response(JSON.stringify({ error }), {
-      status: 400,
+    // Get status code from schema or fallback to error constructor
+    let status = 500;
+    if (matchingSchema) {
+      const schemaStatus = getStatusFromSchema(matchingSchema);
+      if (schemaStatus !== undefined) {
+        status = schemaStatus;
+      }
+    } else if (typeof error === "object" && error !== null) {
+      const errorCtor = (error as object).constructor;
+      if (isRouteError(errorCtor)) {
+        status = getStatusFromError(errorCtor);
+      } else if ("_tag" in error) {
+        status = 400; // Default for tagged errors without schema
+      }
+    }
+
+    // Encode the error using the schema if available
+    let encoded: unknown = error;
+    if (matchingSchema) {
+      // Cast to remove EncodingServices requirement - we handle failures via Effect.exit
+      const encodeEffect = Schema.encodeEffect(matchingSchema)(
+        error,
+      ) as Effect.Effect<unknown, Schema.SchemaError>;
+      const encodeResult = yield* Effect.exit(encodeEffect);
+      if (Exit.isSuccess(encodeResult)) {
+        encoded = encodeResult.value;
+      }
+      // If encoding fails, fall back to the raw error
+    }
+
+    // Determine content type and wrapping behavior
+    let contentType: string;
+
+    if (matchingSchema && isTransformedSchema(matchingSchema)) {
+      // Transformed schemas define their own format - use it directly
+      const annotatedContentType = getContentType(matchingSchema);
+      contentType = annotatedContentType ?? inferContentType(encoded);
+    } else {
+      // Plain RouteError classes or unschematized errors - wrap in { error: ... }
+      contentType = "application/json";
+      encoded = { error: encoded };
+    }
+
+    responseHeaders.set("content-type", contentType);
+    const body = serializeBody(encoded, contentType);
+
+    return new Response(body, {
+      status,
       headers: responseHeaders,
     });
-  }
-
-  // Unknown error
-  responseHeaders.set("content-type", "application/json");
-  return new Response(
-    JSON.stringify({
-      error: { _tag: "InternalServerError", message: String(error) },
-    }),
-    {
-      status: 500,
-      headers: responseHeaders,
-    },
-  );
-};
+  });
 
 /**
  * Handle a single request.
@@ -424,12 +501,17 @@ const handleRequest = (
       if (failures.length > 0) {
         const failure = failures[0]!;
         if (Cause.failureIsFail(failure)) {
-          return buildErrorResponse(failure.error, responseHeaders);
+          return yield* buildErrorResponse(
+            failure.error,
+            route.config.errors,
+            responseHeaders,
+          );
         }
       }
       // Unexpected error (die, interrupt)
-      return buildErrorResponse(
+      return yield* buildErrorResponse(
         new Error("Internal server error"),
+        route.config.errors,
         responseHeaders,
       );
     }

@@ -110,3 +110,115 @@ export const isRouteError = (value: unknown): value is AnyRouteError => {
 export const getStatusFromError = (errorClass: AnyRouteError): number => {
   return (errorClass as { status: number }).status;
 };
+
+// Type for AST node to avoid type assertions on Schema.Top
+interface ASTNode {
+  _tag: string;
+  annotations?: Record<string, unknown>;
+  from?: ASTNode;
+  propertySignatures?: Array<{
+    name: string;
+    type: { _tag: string; value?: string };
+  }>;
+}
+
+/**
+ * Extract the status code from an error schema.
+ *
+ * This handles both:
+ * - Plain RouteError classes (status from static property)
+ * - Transformed schemas via Schema.encodeTo (status from the underlying error class)
+ *
+ * For transformed schemas, we check the `to` property which contains the original error class.
+ */
+export const getStatusFromSchema = (schema: Schema.Top): number | undefined => {
+  // First, check if it's a RouteError class with static status property
+  if (isRouteError(schema)) {
+    return getStatusFromError(schema);
+  }
+
+  // Cast to access ast property
+  const schemaWithAst = schema as { ast: ASTNode };
+  const ast = schemaWithAst.ast;
+
+  // Check for status in the schema's own annotations
+  const directStatus = ast.annotations?.[StatusKey] as number | undefined;
+  if (directStatus !== undefined) {
+    return directStatus;
+  }
+
+  // For transformed schemas (via encodeTo), check the `to` property which is the source error class
+  const schemaObj = schema as { to?: unknown };
+  if (schemaObj.to && isRouteError(schemaObj.to)) {
+    return getStatusFromError(schemaObj.to);
+  }
+
+  return undefined;
+};
+
+/**
+ * Extract the error tag from an error schema.
+ *
+ * This handles both plain RouteError classes and transformed schemas.
+ */
+export const getTagFromSchema = (schema: Schema.Top): string | undefined => {
+  // Check if it's a RouteError class with static _tag property
+  if (isRouteError(schema)) {
+    return (schema as AnyRouteError)._tag;
+  }
+
+  // For transformed schemas (via encodeTo), check the `to` property which is the source error class
+  const schemaObj = schema as { to?: unknown };
+  if (schemaObj.to && isRouteError(schemaObj.to)) {
+    return (schemaObj.to as AnyRouteError)._tag;
+  }
+
+  return undefined;
+};
+
+/**
+ * Check if a schema is a transformed schema (via Schema.encodeTo).
+ * In Effect 4, transformed schemas have `from` and `to` properties directly on the schema object.
+ */
+export const isTransformedSchema = (schema: Schema.Top): boolean => {
+  // RouteError classes are not transformed
+  if (isRouteError(schema)) {
+    return false;
+  }
+
+  // Check for encodeTo transformation - it adds `from` and `to` properties
+  const schemaObj = schema as { from?: unknown; to?: unknown };
+  return schemaObj.from !== undefined && schemaObj.to !== undefined;
+};
+
+/**
+ * Check if an error instance matches an error schema by tag.
+ */
+export const errorMatchesSchema = (
+  error: unknown,
+  schema: Schema.Top,
+): boolean => {
+  if (typeof error !== "object" || error === null || !("_tag" in error)) {
+    return false;
+  }
+
+  const errorTag = (error as { _tag: string })._tag;
+
+  // Check if it's a RouteError class
+  if (isRouteError(schema)) {
+    return (schema as AnyRouteError)._tag === errorTag;
+  }
+
+  // Check for transformed schema
+  const schemaTag = getTagFromSchema(schema);
+  if (schemaTag) {
+    return schemaTag === errorTag;
+  }
+
+  // Fallback: check if error is an instance of the schema (for class-based schemas)
+  if (typeof schema === "function") {
+    return error instanceof (schema as new (...args: unknown[]) => unknown);
+  }
+
+  return false;
+};

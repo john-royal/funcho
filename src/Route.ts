@@ -2,11 +2,10 @@ import type * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import type * as StreamModule from "effect/Stream";
 import * as Annotations from "./Annotations.js";
-import type { AnyRouteError, InstanceOf } from "./Error.js";
 import { isStream, type Stream as StreamSchema } from "./Stream.js";
 
 // Re-export annotation helpers and stream marker
-export { headers, status, statusText } from "./Annotations.js";
+export { contentType, headers, status, statusText } from "./Annotations.js";
 export { RouteError as Error } from "./Error.js";
 export { Stream } from "./Stream.js";
 
@@ -36,7 +35,7 @@ export interface RouteConfig<
   THeaders extends Schema.Top = typeof Schema.Void,
   TBody extends Schema.Top = typeof Schema.Void,
   TSuccess extends Schema.Top = typeof Schema.Void,
-  TErrors extends ReadonlyArray<AnyRouteError> = readonly [],
+  TErrors extends ReadonlyArray<Schema.Top> = readonly [],
 > {
   /** Schema for path parameters (e.g., { id: Schema.String }) */
   readonly path?: TPath;
@@ -48,23 +47,56 @@ export interface RouteConfig<
   readonly body?: TBody;
   /** Success response schema, annotated with Route.status() */
   readonly success: TSuccess;
-  /** Array of error classes created with Route.Error() */
+  /**
+   * Array of error schemas. These can be:
+   * - Plain RouteError classes (e.g., `NotFoundError`)
+   * - Transformed schemas via Schema.encodeTo() for custom response formats
+   *
+   * @example
+   * ```ts
+   * // Plain error
+   * class NotFoundError extends Route.Error("NotFoundError", 404)({
+   *   message: Schema.String,
+   * }) {}
+   *
+   * // Transformed error with custom response shape
+   * const CloudflareNotFoundError = NotFoundError.pipe(
+   *   Schema.encodeTo(CloudflareErrorResponse, {
+   *     encode: SchemaGetter.transform((e) => ({ success: false, errors: [...] })),
+   *     decode: SchemaGetter.transform((r) => new NotFoundError({ message: r.errors[0].message })),
+   *   }),
+   * );
+   *
+   * // Plain text error
+   * const TextUnauthorized = UnauthorizedError.pipe(
+   *   Schema.encodeTo(Schema.String, { ... }),
+   *   Route.contentType("text/plain"),
+   * );
+   *
+   * // Use in route
+   * errors: [NotFoundError, CloudflareNotFoundError, TextUnauthorized]
+   * ```
+   */
   readonly errors?: TErrors;
 }
 
 /**
- * Extract the type from a schema, handling void as undefined.
+ * Extract the type from a schema, returning undefined for never.
+ * Uses direct property access (not conditional inference) to preserve type inference
+ * when used with Effect.fn.
  */
-type SchemaType<S> = S extends Schema.Schema<infer T> ? T : undefined;
+type SchemaType<S extends Schema.Top | never> = [S] extends [never]
+  ? undefined
+  : S["Type"];
 
 /**
  * Handler input - what the handler receives.
  */
 export interface HandlerInput<
-  TPath extends Schema.Top,
-  TQuery extends Schema.Top,
-  THeaders extends Schema.Top,
-  TBody extends Schema.Top,
+  TPath extends Schema.Top | never,
+  TQuery extends Schema.Top | never,
+  THeaders extends Schema.Top | never,
+  TBody extends Schema.Top | never,
 > {
   /** Validated path parameters */
   readonly path: SchemaType<TPath>;
@@ -106,10 +138,11 @@ export type HandlerReturn<TSuccess extends Schema.Top> =
     };
 
 /**
- * Union of error instances from error classes.
+ * Union of error types from error schemas.
+ * Extracts the Type from each schema in the errors array.
  */
-type ErrorsUnion<TErrors extends ReadonlyArray<AnyRouteError>> =
-  TErrors extends readonly [] ? never : InstanceOf<TErrors[number]>;
+type ErrorsUnion<TErrors extends ReadonlyArray<Schema.Top>> =
+  TErrors extends readonly [] ? never : Schema.Schema.Type<TErrors[number]>;
 
 /**
  * A Route definition.
@@ -122,7 +155,7 @@ export interface Route<
   THeaders extends Schema.Top = typeof Schema.Void,
   TBody extends Schema.Top = typeof Schema.Void,
   TSuccess extends Schema.Top = typeof Schema.Void,
-  TErrors extends ReadonlyArray<AnyRouteError> = readonly [],
+  TErrors extends ReadonlyArray<Schema.Top> = readonly [],
   R = never,
 > {
   readonly _tag: "Route";
@@ -167,7 +200,7 @@ export const make = <
   THeaders extends Schema.Top = typeof Schema.Void,
   TBody extends Schema.Top = typeof Schema.Void,
   TSuccess extends Schema.Top = typeof Schema.Void,
-  const TErrors extends ReadonlyArray<AnyRouteError> = readonly [],
+  const TErrors extends ReadonlyArray<Schema.Top> = readonly [],
   R = never,
 >(
   method: TMethod,
@@ -216,7 +249,7 @@ export const get = <
   TQuery extends Schema.Top = typeof Schema.Void,
   THeaders extends Schema.Top = typeof Schema.Void,
   TSuccess extends Schema.Top = typeof Schema.Void,
-  const TErrors extends ReadonlyArray<AnyRouteError> = readonly [],
+  const TErrors extends ReadonlyArray<Schema.Top> = readonly [],
   R = never,
 >(
   pattern: TPattern,
@@ -273,7 +306,7 @@ export const post = <
   THeaders extends Schema.Top = typeof Schema.Void,
   TBody extends Schema.Top = typeof Schema.Void,
   TSuccess extends Schema.Top = typeof Schema.Void,
-  const TErrors extends ReadonlyArray<AnyRouteError> = readonly [],
+  const TErrors extends ReadonlyArray<Schema.Top> = readonly [],
   R = never,
 >(
   pattern: TPattern,
@@ -333,7 +366,7 @@ export const patch = <
   THeaders extends Schema.Top = typeof Schema.Void,
   TBody extends Schema.Top = typeof Schema.Void,
   TSuccess extends Schema.Top = typeof Schema.Void,
-  const TErrors extends ReadonlyArray<AnyRouteError> = readonly [],
+  const TErrors extends ReadonlyArray<Schema.Top> = readonly [],
   R = never,
 >(
   pattern: TPattern,
@@ -359,20 +392,20 @@ export const patch = <
  */
 export const del = <
   const TPattern extends PathInput,
-  TPath extends Schema.Top = typeof Schema.Void,
-  TQuery extends Schema.Top = typeof Schema.Void,
-  THeaders extends Schema.Top = typeof Schema.Void,
+  TPath extends Schema.Top | never = never,
+  TQuery extends Schema.Top | never = never,
+  THeaders extends Schema.Top | never = never,
   TSuccess extends Schema.Top = typeof Schema.Void,
-  const TErrors extends ReadonlyArray<AnyRouteError> = readonly [],
+  const TErrors extends ReadonlyArray<Schema.Top> = readonly [],
   R = never,
 >(
   pattern: TPattern,
   config: Omit<
-    RouteConfig<TPath, TQuery, THeaders, typeof Schema.Void, TSuccess, TErrors>,
+    RouteConfig<TPath, TQuery, THeaders, never, TSuccess, TErrors>,
     "body"
   >,
   handler: (
-    input: HandlerInput<TPath, TQuery, THeaders, typeof Schema.Void>,
+    input: HandlerInput<TPath, TQuery, THeaders, never>,
   ) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>,
 ): Route<
   "DELETE",
@@ -380,7 +413,7 @@ export const del = <
   TPath,
   TQuery,
   THeaders,
-  typeof Schema.Void,
+  never,
   TSuccess,
   TErrors,
   R
@@ -388,11 +421,11 @@ export const del = <
   make(
     "DELETE",
     pattern,
-    config as RouteConfig<
+    config as unknown as RouteConfig<
       TPath,
       TQuery,
       THeaders,
-      typeof Schema.Void,
+      never,
       TSuccess,
       TErrors
     >,
@@ -408,7 +441,7 @@ export const options = <
   TQuery extends Schema.Top = typeof Schema.Void,
   THeaders extends Schema.Top = typeof Schema.Void,
   TSuccess extends Schema.Top = typeof Schema.Void,
-  const TErrors extends ReadonlyArray<AnyRouteError> = readonly [],
+  const TErrors extends ReadonlyArray<Schema.Top> = readonly [],
   R = never,
 >(
   pattern: TPattern,
@@ -453,7 +486,7 @@ export const head = <
   TQuery extends Schema.Top = typeof Schema.Void,
   THeaders extends Schema.Top = typeof Schema.Void,
   TSuccess extends Schema.Top = typeof Schema.Void,
-  const TErrors extends ReadonlyArray<AnyRouteError> = readonly [],
+  const TErrors extends ReadonlyArray<Schema.Top> = readonly [],
   R = never,
 >(
   pattern: TPattern,
