@@ -16,6 +16,11 @@ export const HeadersKey = "funcho/headers";
 export const StatusTextKey = "funcho/statusText";
 
 /**
+ * Annotation key for response content type.
+ */
+export const ContentTypeKey = "funcho/contentType";
+
+/**
  * Annotate a schema with an HTTP status code.
  *
  * @example
@@ -63,6 +68,25 @@ export const statusText =
     schema.annotate({ [StatusTextKey]: textSchema }) as S;
 
 /**
+ * Annotate a schema with a response content type.
+ *
+ * @example
+ * ```ts
+ * const PlainTextError = UnauthorizedError.pipe(
+ *   Schema.encodeTo(Schema.String, {
+ *     encode: SchemaGetter.transform(() => "Unauthorized"),
+ *     decode: SchemaGetter.transform(() => new UnauthorizedError({})),
+ *   }),
+ *   Annotations.contentType("text/plain")
+ * );
+ * ```
+ */
+export const contentType =
+  <T extends string>(type: T) =>
+  <S extends Schema.Top>(schema: S): S =>
+    schema.annotate({ [ContentTypeKey]: type }) as S;
+
+/**
  * Extract the status code from an annotated schema.
  */
 export const getStatus = (schema: Schema.Top): number | undefined => {
@@ -84,4 +108,12 @@ export const getHeaders = (schema: Schema.Top): Schema.Top | undefined => {
 export const getStatusText = (schema: Schema.Top): Schema.Top | undefined => {
   const annotations = schema.ast.annotations;
   return annotations?.[StatusTextKey] as Schema.Top | undefined;
+};
+
+/**
+ * Extract the content type from an annotated schema.
+ */
+export const getContentType = (schema: Schema.Top): string | undefined => {
+  const annotations = schema.ast.annotations;
+  return annotations?.[ContentTypeKey] as string | undefined;
 };

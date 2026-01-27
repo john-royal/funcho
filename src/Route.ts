@@ -30,10 +30,10 @@ export type PathInput = `/${string}`;
  * Route configuration.
  */
 export interface RouteConfig<
-  TPath extends Schema.Top = typeof Schema.Void,
-  TQuery extends Schema.Top = typeof Schema.Void,
-  THeaders extends Schema.Top = typeof Schema.Void,
-  TBody extends Schema.Top = typeof Schema.Void,
+  TPath extends Schema.Top | never = never,
+  TQuery extends Schema.Top | never = never,
+  THeaders extends Schema.Top | never = never,
+  TBody extends Schema.Top | never = never,
   TSuccess extends Schema.Top = typeof Schema.Void,
   TErrors extends ReadonlyArray<Schema.Top> = readonly [],
 > {
@@ -85,9 +85,11 @@ export interface RouteConfig<
  * Uses direct property access (not conditional inference) to preserve type inference
  * when used with Effect.fn.
  */
-type SchemaType<S extends Schema.Top | never> = [S] extends [never]
-  ? undefined
-  : S["Type"];
+type SchemaType<S extends Schema.Top | never> = S extends typeof StreamSchema
+  ? StreamModule.Stream<Uint8Array>
+  : [S] extends [never]
+    ? undefined
+    : S["Type"];
 
 /**
  * Handler input - what the handler receives.
@@ -150,10 +152,10 @@ type ErrorsUnion<TErrors extends ReadonlyArray<Schema.Top>> =
 export interface Route<
   TMethod extends HttpMethod = HttpMethod,
   TPattern extends PathInput = PathInput,
-  TPath extends Schema.Top = typeof Schema.Void,
-  TQuery extends Schema.Top = typeof Schema.Void,
-  THeaders extends Schema.Top = typeof Schema.Void,
-  TBody extends Schema.Top = typeof Schema.Void,
+  TPath extends Schema.Top | never = never,
+  TQuery extends Schema.Top | never = never,
+  THeaders extends Schema.Top | never = never,
+  TBody extends Schema.Top | never = never,
   TSuccess extends Schema.Top = typeof Schema.Void,
   TErrors extends ReadonlyArray<Schema.Top> = readonly [],
   R = never,
@@ -169,46 +171,64 @@ export interface Route<
     TSuccess,
     TErrors
   >;
-  readonly handler: (
-    input: HandlerInput<TPath, TQuery, THeaders, TBody>,
-  ) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>;
+  readonly handler: (input: {
+    readonly path: SchemaType<TPath>;
+    readonly query: SchemaType<TQuery>;
+    readonly headers: SchemaType<THeaders>;
+    readonly body: SchemaType<TBody>;
+    readonly request: Request;
+  }) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>;
 }
 
 /**
  * Any route type for collections.
+ * This is a structural type that matches any Route, using a loose handler type.
  */
-export type AnyRoute = Route<
-  HttpMethod,
-  PathInput,
-  Schema.Top,
-  Schema.Top,
-  Schema.Top,
-  Schema.Top,
-  Schema.Top,
-  ReadonlyArray<AnyRouteError>,
-  unknown
->;
+export interface AnyRoute {
+  readonly _tag: "Route";
+  readonly method: HttpMethod;
+  readonly pattern: PathInput;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  readonly config: RouteConfig<any, any, any, any, any, any>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  readonly handler: (input: any) => Effect.Effect<any, any, any>;
+}
 
 /**
  * Create a route with the given method, pattern, config, and handler.
+ *
+ * Note: The handler input type is inlined rather than using HandlerInput<...>
+ * because TypeScript's inference doesn't work well when flowing through
+ * generic interface type parameters.
  */
 export const make = <
   const TMethod extends HttpMethod,
   const TPattern extends PathInput,
-  TPath extends Schema.Top = typeof Schema.Void,
-  TQuery extends Schema.Top = typeof Schema.Void,
-  THeaders extends Schema.Top = typeof Schema.Void,
-  TBody extends Schema.Top = typeof Schema.Void,
+  TPath extends Schema.Top | never = never,
+  TQuery extends Schema.Top | never = never,
+  THeaders extends Schema.Top | never = never,
+  TBody extends Schema.Top | never = never,
   TSuccess extends Schema.Top = typeof Schema.Void,
   const TErrors extends ReadonlyArray<Schema.Top> = readonly [],
   R = never,
 >(
   method: TMethod,
   pattern: TPattern,
-  config: RouteConfig<TPath, TQuery, THeaders, TBody, TSuccess, TErrors>,
-  handler: (
-    input: HandlerInput<TPath, TQuery, THeaders, TBody>,
-  ) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>,
+  config: {
+    readonly path?: TPath;
+    readonly query?: TQuery;
+    readonly headers?: THeaders;
+    readonly body?: TBody;
+    readonly success: TSuccess;
+    readonly errors?: TErrors;
+  },
+  handler: (input: {
+    readonly path: SchemaType<TPath>;
+    readonly query: SchemaType<TQuery>;
+    readonly headers: SchemaType<THeaders>;
+    readonly body: SchemaType<TBody>;
+    readonly request: Request;
+  }) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>,
 ): Route<
   TMethod,
   TPattern,
@@ -245,45 +265,39 @@ export const make = <
  */
 export const get = <
   const TPattern extends PathInput,
-  TPath extends Schema.Top = typeof Schema.Void,
-  TQuery extends Schema.Top = typeof Schema.Void,
-  THeaders extends Schema.Top = typeof Schema.Void,
+  TPath extends Schema.Top | never = never,
+  TQuery extends Schema.Top | never = never,
+  THeaders extends Schema.Top | never = never,
   TSuccess extends Schema.Top = typeof Schema.Void,
   const TErrors extends ReadonlyArray<Schema.Top> = readonly [],
   R = never,
 >(
   pattern: TPattern,
-  config: Omit<
-    RouteConfig<TPath, TQuery, THeaders, typeof Schema.Void, TSuccess, TErrors>,
-    "body"
-  >,
-  handler: (
-    input: HandlerInput<TPath, TQuery, THeaders, typeof Schema.Void>,
-  ) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>,
+  config: {
+    readonly path?: TPath;
+    readonly query?: TQuery;
+    readonly headers?: THeaders;
+    readonly success: TSuccess;
+    readonly errors?: TErrors;
+  },
+  handler: (input: {
+    readonly path: SchemaType<TPath>;
+    readonly query: SchemaType<TQuery>;
+    readonly headers: SchemaType<THeaders>;
+    readonly body: undefined;
+    readonly request: Request;
+  }) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>,
 ): Route<
   "GET",
   TPattern,
   TPath,
   TQuery,
   THeaders,
-  typeof Schema.Void,
+  never,
   TSuccess,
   TErrors,
   R
-> =>
-  make(
-    "GET",
-    pattern,
-    config as RouteConfig<
-      TPath,
-      TQuery,
-      THeaders,
-      typeof Schema.Void,
-      TSuccess,
-      TErrors
-    >,
-    handler,
-  );
+> => make("GET", pattern, config, handler);
 
 /**
  * Create a POST route.
@@ -301,19 +315,30 @@ export const get = <
  */
 export const post = <
   const TPattern extends PathInput,
-  TPath extends Schema.Top = typeof Schema.Void,
-  TQuery extends Schema.Top = typeof Schema.Void,
-  THeaders extends Schema.Top = typeof Schema.Void,
-  TBody extends Schema.Top = typeof Schema.Void,
+  TPath extends Schema.Top | never = never,
+  TQuery extends Schema.Top | never = never,
+  THeaders extends Schema.Top | never = never,
+  TBody extends Schema.Top | never = never,
   TSuccess extends Schema.Top = typeof Schema.Void,
   const TErrors extends ReadonlyArray<Schema.Top> = readonly [],
   R = never,
 >(
   pattern: TPattern,
-  config: RouteConfig<TPath, TQuery, THeaders, TBody, TSuccess, TErrors>,
-  handler: (
-    input: HandlerInput<TPath, TQuery, THeaders, TBody>,
-  ) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>,
+  config: {
+    readonly path?: TPath;
+    readonly query?: TQuery;
+    readonly headers?: THeaders;
+    readonly body?: TBody;
+    readonly success: TSuccess;
+    readonly errors?: TErrors;
+  },
+  handler: (input: {
+    readonly path: SchemaType<TPath>;
+    readonly query: SchemaType<TQuery>;
+    readonly headers: SchemaType<THeaders>;
+    readonly body: SchemaType<TBody>;
+    readonly request: Request;
+  }) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>,
 ): Route<
   "POST",
   TPattern,
@@ -331,19 +356,30 @@ export const post = <
  */
 export const put = <
   const TPattern extends PathInput,
-  TPath extends Schema.Top = typeof Schema.Void,
-  TQuery extends Schema.Top = typeof Schema.Void,
-  THeaders extends Schema.Top = typeof Schema.Void,
-  TBody extends Schema.Top = typeof Schema.Void,
+  TPath extends Schema.Top | never = never,
+  TQuery extends Schema.Top | never = never,
+  THeaders extends Schema.Top | never = never,
+  TBody extends Schema.Top | never = never,
   TSuccess extends Schema.Top = typeof Schema.Void,
-  const TErrors extends ReadonlyArray<AnyRouteError> = readonly [],
+  const TErrors extends ReadonlyArray<Schema.Top> = readonly [],
   R = never,
 >(
   pattern: TPattern,
-  config: RouteConfig<TPath, TQuery, THeaders, TBody, TSuccess, TErrors>,
-  handler: (
-    input: HandlerInput<TPath, TQuery, THeaders, TBody>,
-  ) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>,
+  config: {
+    readonly path?: TPath;
+    readonly query?: TQuery;
+    readonly headers?: THeaders;
+    readonly body?: TBody;
+    readonly success: TSuccess;
+    readonly errors?: TErrors;
+  },
+  handler: (input: {
+    readonly path: SchemaType<TPath>;
+    readonly query: SchemaType<TQuery>;
+    readonly headers: SchemaType<THeaders>;
+    readonly body: SchemaType<TBody>;
+    readonly request: Request;
+  }) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>,
 ): Route<
   "PUT",
   TPattern,
@@ -361,19 +397,30 @@ export const put = <
  */
 export const patch = <
   const TPattern extends PathInput,
-  TPath extends Schema.Top = typeof Schema.Void,
-  TQuery extends Schema.Top = typeof Schema.Void,
-  THeaders extends Schema.Top = typeof Schema.Void,
-  TBody extends Schema.Top = typeof Schema.Void,
+  TPath extends Schema.Top | never = never,
+  TQuery extends Schema.Top | never = never,
+  THeaders extends Schema.Top | never = never,
+  TBody extends Schema.Top | never = never,
   TSuccess extends Schema.Top = typeof Schema.Void,
   const TErrors extends ReadonlyArray<Schema.Top> = readonly [],
   R = never,
 >(
   pattern: TPattern,
-  config: RouteConfig<TPath, TQuery, THeaders, TBody, TSuccess, TErrors>,
-  handler: (
-    input: HandlerInput<TPath, TQuery, THeaders, TBody>,
-  ) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>,
+  config: {
+    readonly path?: TPath;
+    readonly query?: TQuery;
+    readonly headers?: THeaders;
+    readonly body?: TBody;
+    readonly success: TSuccess;
+    readonly errors?: TErrors;
+  },
+  handler: (input: {
+    readonly path: SchemaType<TPath>;
+    readonly query: SchemaType<TQuery>;
+    readonly headers: SchemaType<THeaders>;
+    readonly body: SchemaType<TBody>;
+    readonly request: Request;
+  }) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>,
 ): Route<
   "PATCH",
   TPattern,
@@ -400,13 +447,20 @@ export const del = <
   R = never,
 >(
   pattern: TPattern,
-  config: Omit<
-    RouteConfig<TPath, TQuery, THeaders, never, TSuccess, TErrors>,
-    "body"
-  >,
-  handler: (
-    input: HandlerInput<TPath, TQuery, THeaders, never>,
-  ) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>,
+  config: {
+    readonly path?: TPath;
+    readonly query?: TQuery;
+    readonly headers?: THeaders;
+    readonly success: TSuccess;
+    readonly errors?: TErrors;
+  },
+  handler: (input: {
+    readonly path: SchemaType<TPath>;
+    readonly query: SchemaType<TQuery>;
+    readonly headers: SchemaType<THeaders>;
+    readonly body: undefined;
+    readonly request: Request;
+  }) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>,
 ): Route<
   "DELETE",
   TPattern,
@@ -417,110 +471,88 @@ export const del = <
   TSuccess,
   TErrors,
   R
-> =>
-  make(
-    "DELETE",
-    pattern,
-    config as unknown as RouteConfig<
-      TPath,
-      TQuery,
-      THeaders,
-      never,
-      TSuccess,
-      TErrors
-    >,
-    handler,
-  );
+> => make("DELETE", pattern, config, handler);
 
 /**
  * Create an OPTIONS route.
  */
 export const options = <
   const TPattern extends PathInput,
-  TPath extends Schema.Top = typeof Schema.Void,
-  TQuery extends Schema.Top = typeof Schema.Void,
-  THeaders extends Schema.Top = typeof Schema.Void,
+  TPath extends Schema.Top | never = never,
+  TQuery extends Schema.Top | never = never,
+  THeaders extends Schema.Top | never = never,
   TSuccess extends Schema.Top = typeof Schema.Void,
   const TErrors extends ReadonlyArray<Schema.Top> = readonly [],
   R = never,
 >(
   pattern: TPattern,
   config: Omit<
-    RouteConfig<TPath, TQuery, THeaders, typeof Schema.Void, TSuccess, TErrors>,
+    {
+      readonly path?: TPath;
+      readonly query?: TQuery;
+      readonly headers?: THeaders;
+      readonly success: TSuccess;
+      readonly errors?: TErrors;
+    },
     "body"
   >,
-  handler: (
-    input: HandlerInput<TPath, TQuery, THeaders, typeof Schema.Void>,
-  ) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>,
+  handler: (input: {
+    readonly path: SchemaType<TPath>;
+    readonly query: SchemaType<TQuery>;
+    readonly headers: SchemaType<THeaders>;
+    readonly body: undefined;
+    readonly request: Request;
+  }) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>,
 ): Route<
   "OPTIONS",
   TPattern,
   TPath,
   TQuery,
   THeaders,
-  typeof Schema.Void,
+  never,
   TSuccess,
   TErrors,
   R
-> =>
-  make(
-    "OPTIONS",
-    pattern,
-    config as RouteConfig<
-      TPath,
-      TQuery,
-      THeaders,
-      typeof Schema.Void,
-      TSuccess,
-      TErrors
-    >,
-    handler,
-  );
+> => make("OPTIONS", pattern, config, handler);
 
 /**
  * Create a HEAD route.
  */
 export const head = <
   const TPattern extends PathInput,
-  TPath extends Schema.Top = typeof Schema.Void,
-  TQuery extends Schema.Top = typeof Schema.Void,
-  THeaders extends Schema.Top = typeof Schema.Void,
+  TPath extends Schema.Top | never = never,
+  TQuery extends Schema.Top | never = never,
+  THeaders extends Schema.Top | never = never,
   TSuccess extends Schema.Top = typeof Schema.Void,
   const TErrors extends ReadonlyArray<Schema.Top> = readonly [],
   R = never,
 >(
   pattern: TPattern,
-  config: Omit<
-    RouteConfig<TPath, TQuery, THeaders, typeof Schema.Void, TSuccess, TErrors>,
-    "body"
-  >,
-  handler: (
-    input: HandlerInput<TPath, TQuery, THeaders, typeof Schema.Void>,
-  ) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>,
+  config: {
+    readonly path?: TPath;
+    readonly query?: TQuery;
+    readonly headers?: THeaders;
+    readonly success: TSuccess;
+    readonly errors?: TErrors;
+  },
+  handler: (input: {
+    readonly path: SchemaType<TPath>;
+    readonly query: SchemaType<TQuery>;
+    readonly headers: SchemaType<THeaders>;
+    readonly body: undefined;
+    readonly request: Request;
+  }) => Effect.Effect<HandlerReturn<TSuccess>, ErrorsUnion<TErrors>, R>,
 ): Route<
   "HEAD",
   TPattern,
   TPath,
   TQuery,
   THeaders,
-  typeof Schema.Void,
+  never,
   TSuccess,
   TErrors,
   R
-> =>
-  make(
-    "HEAD",
-    pattern,
-    config as RouteConfig<
-      TPath,
-      TQuery,
-      THeaders,
-      typeof Schema.Void,
-      TSuccess,
-      TErrors
-    >,
-    handler,
-  );
+> => make("HEAD", pattern, config, handler);
 
 /**
  * Check if a schema is the Stream marker.

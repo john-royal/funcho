@@ -1,6 +1,5 @@
-import { assert, describe, expect, it } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import * as Handler from "../src/Handler.js";
 import * as Route from "../src/Route.js";
@@ -40,7 +39,7 @@ const getUser = Route.get(
   "/users/:id",
   {
     path: Schema.Struct({ id: Schema.String }),
-    success: User.pipe(Route.status(200)),
+    success: User,
     errors: [NotFoundError],
   },
   Effect.fnUntraced(function* ({ path }) {
